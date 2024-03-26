@@ -1,0 +1,471 @@
+% IMPORTANT NOTES: In the background section, you switch your indices frequently.
+% Sometimes using k and othertimes using t, but with the same meaning. This
+% subtle switch is likely to distract the reader.
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2021
+
+% ready for submission
+\usepackage[preprint]{neurips_2021}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%     \usepackage[preprint]{neurips_2021}
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2021}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2021}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{mathtools}
+
+
+% Personal adds
+\usepackage{amsmath}        % not sure if this is valid for NeurIPS submission
+\bibliographystyle{abbrvnat}
+\setcitestyle{numbers, open={[}, close={]}}
+\setcitestyle{square}
+
+\DeclareMathOperator*{\argmax}{arg\,max}
+\title{SGD for Rollout Acquisition Functions}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+\author{%
+  Darian Nwankwo %\thanks{Use footnote for providing further information
+    %about author (webpage, alternative address)---\emph{not} for acknowledging
+    %funding agencies.} \\
+    \\
+  Department of Computer Science\\
+  Cornell University\\
+  Ithaca, NY 14850 \\
+  \texttt{don4@cornell.edu} \\
+  % examples of more authors
+   \And
+   David Bindel \\
+   Department of Computer Science \\
+   Cornell University \\
+   Ithaca, NY 14850 \\
+   \texttt{bindel@cornell.edu} \\
+  % \AND
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+  Several strategies for myopic Bayesian optimization have been proposed where the immediate reward 
+  is maximized. Myopia isn’t inherently bad; rather than under-weighing future consequences, we 
+  ignore them altogether. Non-myopic Bayesian optimization aims to resolve these issues by using 
+  “lookahead” algorithms that maximize a reward over a finite horizon. In this work, we provide a 
+  novel formulation for constructing non-myopic heuristics using well-tested myopic heuristics as 
+  building blocks.  Our formulation creates a family of non-myopic acquisition functions that is 
+  highly parametric; the choice of “base acquisition function” and horizon creates this familial 
+  space.
+\end{abstract}
+
+\section{Introduction}
+When making decisions that involve uncertainty and expensive operations—from finding optimal 
+hyper-parameters in a deep neural networks to mining oil—we want to minimize the time it takes to
+find an optimal decision. Given these circumstances, Bayesian optimization (BO) is a set of methods that performs well. Some of 
+the most promising applications of Bayesian optimization use myopic strategies—performing the best 
+with what is immediately present while ignoring its impact on future decision making.
+
+In some settings, however, we want to behave non-myopically \cite{Yue2019}. It has been shown 
+that behaving non-myopically may produce solutions quicker than when behaving myopically. 
+Quicker solutions means less expensive operations—this is our primary goal in the first place.
+Non-myopic formulations tend to explore the search space better than greedy myopic formulations, 
+so the benefit extends to applications in active learning as well. Philosophically, 
+behaving optimally in the short-term is naive in some settings.
+
+Behaving non-myopically often suffers from the curse of dimensionality. Extending the greedy method 
+of behaving optimally in the short-term to the long-term quickly produces a program that is 
+computationally intractable. We need a formulation that considers the impact on future decision 
+making while being computational tractable. Non-myopic formulations tend to be computationally tractable in 
+a few circumstances:
+\begin{enumerate}
+    \item When the number of dimensions is extremely low, say $\leq 2$; or
+    \item The data-generating process takes more time to get data from than our algorithm takes to 
+    converge.
+\end{enumerate}
+
+
+Non-myopic formulations suffer from the curse of dimensionality; as we consider the impact of more 
+subsequent decisions, our problem space increases exponentially. Oftentimes, solutions are 
+approximate dynamic programs and the heuristics used to solve them are approximations to the underlying value function. Tooling is still being developed to address this issue.
+
+This paper aims to make non-myopic BO more practical by reducing the time to suggest the next point. 
+In particular, our main contributions are:
+\begin{itemize}
+    \item We compute rollout acquisition functions via Monte Carlo integration and use variance 
+    reduction techniques to decrease the estimation error.
+    \item We introduce a trajectory-based formulation for deriving non-myopic acquisition functions 
+    using myopic functions—or any heuristic—as base heuristics.
+    \item We provide a way to differentiate rollout acquisition functions given a differentiable base policy.
+\end{itemize}
+
+\section{Background and Related Work}
+The development of non-myopic Bayesian optimization has received a lot of attention over the past 
+few years (include references). A lot of this research is about rollout, where future realizations 
+of BO are simulated over a finite horizon $h$ using a GP model and averaged to determine the 
+acquisition function. Rollout acquisition functions represent state-of-the-art in BO and are 
+integrals over $h$ dimensions, where the integrand itself is evaluated through inner optimizations, 
+resulting in an expensive integral. The rollout acquisition function is then maximized to determine 
+the next BO evaluation, further increasing the cost. This large computational overhead has been 
+observed by Osborn et el.\cite{Osborne2009}, who are only able to compute rollout acquisition for 
+horizon 2, dimension 1. Lam et al. \cite{Lam2016}, who use Gauss-Hermite quadrature in horizons 
+up to five saw runtimes on the order of hours for small, synthetic functions \cite{Frazier2019}.
+
+Recent work focuses on making rollout more practical. Wu and Frazier \cite{Frazier2019} consider horizon 2, using a 
+combination of Gauss-Hermite quadrature \cite{liupierce1994} and Monte Carlo (MC) integration to quickly calculate the 
+acquisition function and its gradient. Non-myopic active learning also uses rollout \cite{garnett2012bayesian, jiang2017efficient, jiang2018efficient, krause2007nonmyopic}
+and recent work develops a fast implementation by truncating the horizon and selecting a 
+batch of points to collect future rewards\cite{jiang2017efficient, jiang2018efficient}.
+
+\subsection{Gaussian process regression and Bayesian optimization}
+Consider the problem of seeking a global minimum of a continuous objective $f(\textbf{x})$ over a 
+compact set $\Omega \subseteq \mathbb{R^d}$. If $f(\textbf{x})$ is expensive to evaluate, then 
+finding a minimum should be sample-efficient. BO typically uses a Gaussian process (GP) to model 
+$f(\textbf{x})$ from the data $\mathcal{D}_n = \{(\textbf{x}^i, y_i) : 0 \leq i \leq n, i \in 
+\mathbb{N}\}$. The next evaluation location $\textbf{x}^{n+1}$ is determined by maximizing an 
+acquisition function $\alpha(\textbf{x} \;|\; \mathcal{D}_n)$:
+
+$$
+\textbf{x}^{n+1} = \arg\max_{\Omega} \alpha(\textbf{x} \;|\; \mathcal{D}_n).
+$$
+
+We place a GP prior on $f(\textbf{x})$, denoted by $f \sim \mathcal{GP}(\mu, k)$, where 
+$\mu : \Omega \to \mathbb{R}$ and $k : \Omega \times \Omega \to \mathbb{R}$ are the mean and 
+covariance function, respectively. Here,  $k$ is a kernel that correlates points in our sample space and it 
+typically contains hyper-parameters—like a lengthscale factor—that are learned to improve the quality
+of the approximation \cite{rasmussen_i._2006}. Given $\mathcal{D}_n$, we define the 
+following for convenience of representation:
+
+$$
+\textbf{y} = \begin{bmatrix} y_1\\ \vdots \\ y_n\end{bmatrix} \;, \;\textbf{k}(\textbf{x}) = 
+\begin{bmatrix}K(\textbf{x}, \textbf{x}^1) \\ \vdots \\ K(\textbf{x}, \textbf{x}^n) \end{bmatrix} 
+\;,\; K = \begin{bmatrix}\textbf{k}(\textbf{x}^1)^T \\ \vdots \\ 
+\textbf{k}(\textbf{x}^n)^T\end{bmatrix}.
+$$
+
+We assume each observation $y_i$ is tainted with Gaussian white noise: $y_i = f(\textbf{x}^i) + 
+\epsilon_i$, where $\epsilon \sim \mathcal{N}(0, \sigma^2)$. Given a GP prior and data 
+$\mathcal{D}_n$, the resulting posterior distribution for function values at a location $\textbf{x}$ 
+is the Normal distribution $\mathcal{N}(\mu^{(n)}(\textbf{x}\;|\;\mathcal{D}_n),\; 
+K^{(n)}(\textbf{x},\textbf{x} \; | \;\mathcal{D}_n))$:
+\begin{equation}
+    \mu^{(n)}(\textbf{x}|\;\mathcal{D}_n) = \mu(\textbf{x}) + 
+    \textbf{k}(\textbf{x})^T(K+\sigma^2I_n)^{-1}(\textbf{y} - \mu(\textbf{x}))
+\end{equation} 
+\begin{equation}
+    K^{(n)}(\textbf{x},\textbf{x}  | \;\mathcal{D}_n) = K(\textbf{x}, \textbf{x}) - 
+    \textbf{k}(\textbf{x})^T(K+\sigma^2I_n)^{-1}\textbf{k}(\textbf{x})
+\end{equation}
+where $I_n \in \mathbb{R}^{n\times n}$ is the identity matrix.
+
+\subsection{Non-myopic Bayesian optimization}
+Non-myopic BO frames the exploration-exploitation problem as a balance of immediate and future 
+rewards. Lam et al.\cite{Lam2016} formulate non-myopic BO as a finite horizon dynamic program; the equivalent 
+Markov decision process follows.
+
+The notation used is standard in Puterman\cite{puterman2014markov}: an MDP is a collection $(T, \mathbb{S}, \mathbb{A}, P, 
+R)$. Where $T = \{0,1,\dots,h-1\}, $ and $\;h < \infty$ is the set of decision epochs, assumed finite for our 
+problem. The state space, $\mathbb{S}$, encapsulates all the information needed to model the system 
+from time $t \in T$. Where $\mathbb{A}$ is the action space; given a state $s \in \mathbb{S}$ and an 
+action $a \in \mathbb{A}, \; P(s'|s,a)$ is the transition probability of the next state being $s'$. 
+$R(s,a,s')$ is the reward received for choosing action $a$ in state $s$, and ending in state $s'$.
+
+A decision rule, $\pi_t : \mathbb{S} \to \mathbb{A}$, maps states to actions at time $t$. A policy 
+$\pi$ is a series of decision rules $\pi = (\pi_0, \pi_1, \dots, \pi_{h-1})$, one at each decision 
+epoch. Given a policy $\pi$, a starting state $s_0$, and horizon $h$, we can define the expected 
+total reward $V_h^\pi(s_0)$ as:
+
+$$
+V_h^\pi(s_0) = \mathbb{E}\left[ \sum_{t=0}^{h-1} R(s_t, \pi_t(s_t), s_{t+1}) \right].
+$$
+
+Since our sequence of decisions is formulated as an MDP, our objective is to find the optimal policy 
+$\pi^*$ that maximizes the expected total reward, i.e., $sup_{\pi \in \Pi}V_h^\pi(s_0)$, where $\Pi$ 
+is the space of all admissible policies.
+
+If we can sample from the transition probability $P$, we can estimate the expected total reward of
+any base policy---the decisions made using the base acquisition function---$\hat{\pi}$ with MC integration (site Sutton RL Book):
+
+% Our base policy consist of the decisions made using the base acquisition function 
+% The series of decisions made using the base acquisition 
+% function determines our base policy.
+
+$$
+V_h^{\hat{\pi}}(s_0) \approx \frac{1}{N}\sum_{i=1}^N\left[\sum_{t=0}^{h-1}R(s_t^i, 
+\hat{\pi}_t(s_t^i), s^i_{t+1})\right].
+$$
+
+Given a GP prior over data $\mathcal{D}_t$ with mean $\mu^{(t)}$ and covariance matrix $K^{(t)}$, we 
+model $h$ steps of BO as an MDP. This MDP’s state space is all possible data sets reachable from 
+starting-state $\mathcal{D}_t$ with $h$ steps of BO. Its action space is $\Omega$; actions 
+correspond to sampling a point in $\Omega$. Its transition probability and reward function are 
+defined as follows. Given an action $x^{t+1}$, the transition probability from $\mathcal{D}_t$ to 
+$\mathcal{D}_{t+1}$, where $\mathcal{D}_{t+1} = \mathcal{D}_t \;\cup\; \{(\textbf{x}^{t+1}, 
+y_{t+1})\}$ is:
+
+$$
+P(\mathcal{D}_t, \textbf{x}^{t+1}, \mathcal{D}_{t+1}) \sim 
+\mathcal{N}(\mu^{(t)}(\textbf{x}^{t+1};\mathcal{D}_t),K^{(t)}(\textbf{x}^{t+1}, 
+\textbf{x}^{t+1};\mathcal{D}_t)).
+$$
+
+Thus, the transition probability from $\mathcal{D}_t$ to $\mathcal{D}_{t+1}$ is the probability of 
+sampling $y_{t+1}$ from the posterior $\mathcal{GP}(\mu^{(t)}, K^{(t)})$ at $\textbf{x}^{t+1}$. We 
+define a reward according to expected improvement (EI) (reference D. R. Jones 1998). Let $f^*_t$ be 
+the minimum observed value in the observed set $\mathcal{D}_t$, i.e., $f^*_t = \min\{y_0, \dots, 
+y_t\}$. Then our reward is expressed as follows:
+
+$$
+R(\mathcal{D}_t, \textbf{x}^{t+1}, \mathcal{D}_{t+1}) = (f^*_t-f_{t+1})^+ \equiv \max(f^*_t-f_{t+1}, 
+0).
+$$
+
+EI can be defined as the optimal policy for horizon one, obtained by maximizing the immediate reward:
+
+$$
+\pi_{EI} = \argmax_\pi V_1^\pi(\mathcal{D}_t) = \argmax_{\textbf{x}^{t+1} \in \Omega} \mathbb{E}\left[ 
+(f_t^*-f_{t+1})^+ \right] \equiv \argmax_{\textbf{x}^{t+1}\in\Omega} EI(\textbf{x}^{t+1}|\mathcal{D}_{t}),
+$$
+
+where the starting state is $\mathcal{D}_t$—our initial samples. We define the non-myopic policy, 
+however, as the optimal solution to an $h$-horizon MDP. The expected total reward of this MDP can be 
+expressed as:
+
+$$
+V_h^\pi(\mathcal{D}_n) = \mathbb{E}\left[ \sum_{t=n}^{n+h-1} R(\mathcal{D}_t, \pi_t(\mathcal{D}_t), 
+\mathcal{D}_{t+1})\right] = \mathbb{E}\left[ \sum_{t=n}^{n+h-1} (f_t^* - f_{t+1})^+\right].
+$$
+
+When $h>2$, the optimal policy is difficult to compute.
+
+\subsection{Rollout acquisition functions}
+Rollout policies are sub-optimal approximations to our MDP program, yet yield promising results; 
+they are tractable alternatives to optimal policies.
+For a given state $\mathcal{D}_n$, we denote 
+our base policy $\Tilde{\pi} = (\Tilde{\pi}_0, \Tilde{\pi}_1, \dots, \Tilde{\pi}_h)$. We let
+$\mathcal{D}_n$ denote the initial state of our MDP and $\mathcal{D}_{n,k}$ for $0 \leq k \leq h$ 
+to denote the random variable that is the state at each decision epoch. Each individual decision rule
+$\Tilde{\pi}_k$ consists of maximizing the base acquisition function $\bar{\alpha}$ given the current
+state $s_k = \mathcal{D}_{n, k}$, i.e.
+$$
+\Tilde{\pi}_k = \argmax_{\textbf{x} \in \Omega} \bar{\alpha} \left( \textbf{x} | \mathcal{D}_{n,k}\right).
+$$
+Using this policy, we define the non-myopic acquisition function $\alpha_h\left(\textbf{x}\right)$ as
+the rollout of $\Tilde{\pi}$ to horizon $h$, i.e. the expected reward of $\Tilde{\pi}$ starting with action
+$\Tilde{\pi}_0 = \textbf{x}$:
+$$
+\alpha_h \left(\textbf{x}^{n+1}\right) \coloneqq \mathbb{E} \left[ 
+V^{\Tilde{\pi}}_{h} \left( \mathcal{D}_{n} \cup \{ \left(
+\textbf{x}^{n+1}, y_{n+1}
+\right) \} \right) \right],
+$$
+where $y_{n+1}$ is the noisy observed value of $f$ at $\textbf{x}^{n+1}$. Thus, as is the case with
+any acquisition function, the next BO evaluation is:
+$$
+\textbf{x}^{n+1} = \argmax_{\textbf{x} \in \Omega} \alpha_h\left(\textbf{x}\right).
+$$
+Rollout is tractable and conceptually straightforward, however, it is still computationally demanding.
+To rollout $\Tilde{\pi}$ once, we must do $h$ steps of BO with $\bar{\alpha}$. Many of the
+aforementioned rollouts must then be averaged to reasonably estimate $\alpha_h$, which is an
+$h$-dimensional integral. Estimation can be done either through explicit quadrature or MC integration,
+and is the primary computational bottleneck of rollout. Our paper... (list contributions)
+
+\section{Models and methods}
+% We introduce the following notation of negative indices for distinguising between known values, starting point, and "fantasized trajectories".
+
+% May need to adjust language: our model to the model, etc.
+\label{models_and_methods}
+We build our intuition behind our approach from a top-down perspective. We've seen that non-myopic 
+Bayesian optimization is promising, though tends to be computationally intractable. To circumvent
+this problem, we formulate a sub-optimal approximation to solve the intractable dynamic program;
+namely, a rollout acquisition function. Though relatively more tractable, rollout acquisition
+functions can be computationally burdensome. We're interested in solving $x^{*} = \argmax_{x \in 
+\mathcal{X}} \alpha(x)$ where
+\begin{equation}
+    % \begin{split}
+        \alpha(x) = \mathbb{E}_{\hat{f}\sim\mathcal{G}}
+        \left[\alpha\big(x|\tau(h,x,\bar{\alpha},\hat{f})\big)\right]
+        \approx \frac{1}{N}\sum_{i=1}^N (f^*-\bigl(t^i(x)\bigr)^-)^+
+    % \end{split}
+\end{equation}
+where $t^i(x) \sim \tau(h,x,\bar{\alpha},\hat{f})$ are sample trajectories, soon to be defined.
+Unfortunately, derivative-free optimization in high-dimensional spaces is expensive, so
+we'd like estimates of $\nabla\alpha(x)$. In particular, differentiating with respect to $x$
+yields the following:
+\begin{equation}
+    \nabla_x\left[\alpha(x)\right] \approx \nabla_x
+    \left[\frac{1}{N}\sum_{i=1}^N (f^*-\bigl(t^i(x)\bigr)^-)^+\right]
+    = \frac{1}{N}\sum_{i=1}^N \left(-\nabla_x\left[\bigl(t^i(x)\bigr)^-\right]\right)^+
+\end{equation}
+which requires some notion of differentiating sample trajectories. In what follows, we define
+how to compute/differentiate sample trajectories and how to differentiate the rollout
+acquisition function.
+% In our formulation, evaluating the rollout acquisition function consist of solving an inner optimization; 
+% furthermore, we'd like gradient estimates of the rollout acquisition function.
+
+% In what follows, we maintain two distinct GP sequences. For the outer optimization,
+% $\alpha(x)$, we need gradient estimates along our trajectories in order to compute
+% $\nabla\alpha(x)$. For the inner optimization involving trajectories,
+% $\tau(h,x,\bar{\alpha},\hat{f})$, we...(figure out how to word that we only need function
+% values here).
+
+Our model, fundamentally, relies 
+on the distinction amongst known sample locations $\{\textbf{x}^{-h} \in\mathbb{R}^d \;|\; 1 \leq h \leq 
+m\}$, deterministic start location $\{\textbf{x}^0 \in\mathbb{R}^d\}$, and the stochastic fantasized 
+sample locations $\{\textbf{x}^h \in\mathbb{R}^d\;|\; 1 \leq h \leq r\}$. Alternatively, this can be 
+visualized as follows:
+
+$$
+X^{m+r+1} :=\begin{bmatrix} \textbf{x}^{-m} \;\dots \;\textbf{x}^{-1} | \;\textbf{x}^0 | \; \textbf{x}^1 
+\;\dots\; \textbf{x}^r\end{bmatrix} \in \mathbb{R}^{d\times (m+r+1)}.
+$$
+
+Moreover, we collect the $m$ known samples into $y=\begin{bmatrix}y_{-m}\; \dots 
+\;y_{-1}\end{bmatrix}^T$. The negative superscripts emphasize our known history; given some starting
+location $\textbf{x}^0$, the positive superscripts denote the anticipated behavior of our model.
+The distinction between negative, null, and positive superscripts serves a useful purpose:
+
+\begin{itemize}
+    \item Negative superscripts can be thought of as the past; potentially noisy observations that are 
+    fixed and immutable.
+    \item The null superscripts denotes our freedom of choice; we are not bound to start at a specific 
+    location.
+    \item Positive superscripts can be thought of as our ability to see into the future; things we 
+    anticipate on observing given our current beliefs.
+\end{itemize}
+
+We introduce the following notation to distinguish between two GP sequences that must be maintained. Suppose
+we have function values and gradients denoted as follows: $(\hat{f}_0, \nabla\hat{f}_0), \dots
+(\hat{f}_r, \nabla\hat{f}_r)$. We define two GP sequences as:
+% Fix issue with rendering this notation
+\begin{align*}
+    \mathcal{F}_h \; \sim \;\mathcal{F}_0 &|\mathcal{F}_h(x^0)=\hat{f}_0,\dots,\mathcal{F}_h(x^r)=\hat{f}_h \\
+    \mathcal{G}_h \; \sim \;\mathcal{F}_0 &|\mathcal{F}_h(x^0)=\hat{f}_0,\dots,\mathcal{F}_h(x^r)=\hat{f}_h, \\
+    &\nabla\mathcal{F}_h(x^0)=\nabla\hat{f}_0,\dots,\nabla\mathcal{F}_h(x^h)=\nabla\hat{f}_h.
+\end{align*}
+
+Our problem is how to choose $\textbf{x}^0$ to maximize our expected reward over some finite horizon $r$. We focus on developing an $r$-step expected improvement (EI) rollout policy that involves choosing $\textbf{x}^0$ by using Stochastic Gradient Descent (SGD) to optimize our rollout acquisition function.
+
+An $r$-step EI \textit{rollout} policy involves choosing $\textbf{x}^0$ based on the anticipated behavior of 
+the EI ($\bar{\alpha}$) algorithm starting from $\textbf{x}^0$ and proceeding for $h$-steps. That is, we consider the 
+iteration
+
+\begin{equation}
+    \textbf{x}^r = \argmax_x\bar\alpha(\textbf{x} \;|\; \mathcal{F}_{r-1}), \; 1 \leq r \leq h
+\end{equation}
+where the trajectory relations are
+\begin{align*}
+    \nabla_{x^r}\bar{\alpha}(\textbf{x}^r|\mathcal{F}_{r-1})=\textbf{0} \\ \left(\hat{f}_r, 
+    \nabla\hat{f}_r\right) \sim \mathcal{G}_{r-1}(\textbf{x}^r).
+\end{align*}
+
+The rollout acquisition function $\alpha(\textbf{x})$ is evaluated by analyzing the efficacy of our 
+trajectory—otherwise known as our rollout policy. Trajectories are fundamentally random variables; their 
+behavior is determined by the rollout horizon $r$, start location $\textbf{x}$, base policy $\bar{\alpha}$, and 
+surrogate model $\mathcal{F}$—denoted as $\tau(h,\textbf{x}, \bar{\alpha},\mathcal{F})$. 
+
+Now, we’re able to evaluate the acquisition function:
+
+\begin{equation}
+    \alpha(\textbf{x}) = \mathbb{E}_{\hat{f}\sim\mathcal{G}}\left[
+    \alpha(\textbf{x}|\tau(h, \textbf{x}, \bar{\alpha}, 
+    \hat{f}))\right].
+\end{equation}
+\begin{equation}
+    \nabla_{\textbf{x}}\left[\alpha(\textbf{x})\right] = 
+    \nabla_{\textbf{x}}\left[\mathbb{E}_{\hat{f}\sim\mathcal{G}}\left[
+    \alpha(\textbf{x}|\tau(h, \textbf{x}, \bar{\alpha}, 
+    \hat{f}))\right]\right].
+\end{equation}
+
+Furthermore, we denote sample draws $t^i \sim \tau(h, \textbf{x}, \bar{\alpha}, \mathcal{F})$ as follows:
+
+\begin{equation}
+    t^i = \bigg( \Big(x^0, \hat{f}_0^i(x^0), \nabla\hat{f}_0^i(x^0)\Big), \dots,\Big(x^h, 
+    \hat{f}^i_h(x^h), \nabla\hat{f}^i_h(x^h)\Big) \bigg)  
+\end{equation}
+
+
+Computing this sample path, however, requires we solve the iteration above. We also use the notation $t^i_{j,k}$ 
+to denote the $k$-th element of the $j$-th 3-tuple associated with the $i$-th sample.
+Now that we have some provisional notation we can evaluate
+$\alpha(\textbf{x})$ and $\nabla \alpha(\textbf{x})$ via Monte Carlo 
+integration:
+\begin{equation}
+    \alpha(\textbf{x}) \approx \frac{1}{N}\sum_{i=1}^N \max(f^*-\min(t^i),0). \\
+\end{equation}
+
+\section{Experiments and discussion}
+Throughout our experiments we use a GP with the Matérn 5/2 ARD kernel and learn its hyperparameters
+via maximum likelihood estimation. When rolling out acquisition functions, we maximize them using
+Stochastic Gradient Ascent. Expected improvement is used as the base policy and the synthetic
+functions used are found in (include reference to Surjanovic). We will provide code upon publication.
+% Surjanovic -> Virtual library of simulation experiments: Test functions and datasets.
+
+\section{Conclusion}
+We have shown that a combination of quasi-Monte Carlo, common random numbers, maintaining two GP sequences
+lowers the overhead of rollout in BO. We have introduced differentiating trajectories which further decreases
+the computational cost to maximize the rollout acquisition function.
+
+This work yields some interesting research directions. We've described a computational framework that supports
+arbitrary base policies.
+
+\begin{equation}
+    \max_{x \in \Omega} f(x)
+\end{equation}
+
+% \begin{ack}
+% \end{ack}
+
+\small
+\nocite{*}
+\bibliography{refs}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{Appendix}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Acquisition Function Gradients}
+
+\end{document}

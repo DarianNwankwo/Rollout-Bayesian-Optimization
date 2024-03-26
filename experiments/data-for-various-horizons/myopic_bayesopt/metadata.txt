@@ -1,0 +1,5 @@
+Budget: 15
+Number of Trials: 60
+Number of Starts: 8
+Data Directory: ../data-for-various-horizons
+Should Optimize: true

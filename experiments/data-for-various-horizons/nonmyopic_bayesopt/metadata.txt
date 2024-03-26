@@ -1,0 +1,10 @@
+Budget: 15
+Number of Trials: 60
+Number of Starts: 8
+Data Directory: ../data-for-various-horizons
+Should Optimize: true
+Horizon: 0
+MC Samples: 50
+Batch Size: 8
+SGD Iterations: 50
+Should Reduce Variance: false

@@ -1,0 +1,1 @@
+(rosenbrock) Trial 45 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007fbf779ea8b0)])
