@@ -235,7 +235,7 @@ function simulate_trajectory(
 
     for sample_ndx in 1:tp.mc_iters
         # Rollout trajectory
-        T = Trajectory(deepcopy_s, tp.x0, tp.h)
+        T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
         rollout!(T, tp.lbs, tp.ubs;
             rnstream=tp.rnstream_sequence[sample_ndx, :, :],
             xstarts=xstarts,
@@ -307,7 +307,7 @@ function distributed_simulate_trajectory(
 end
 
 
-function rollout_solver(;
+function stochastic_rollout_solver(;
     sur::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64},
@@ -346,7 +346,7 @@ function rollout_solver(;
     return best_tuple.finish, best_tuple.final_obj
 end
 
-function distributed_rollout_solver(;
+function distributed_stochastic_rollout_solver(;
     sur::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64},
@@ -394,6 +394,39 @@ function distributed_rollout_solver(;
 end
 
 
+function SAA_constructor(
+    sur::RBFsurrogate,
+    tp::TrajectoryParameters,
+    xstarts::Matrix{Float64};
+    variance_reduction::Bool=false,
+    candidate_locations::SharedMatrix{Float64},
+    candidate_values::SharedArray{Float64}
+    )
+    function rollout(x)
+        tp.x0[:] = x
+        μx, ∇μx, _, _ = simulate_trajectory(sur, tp, xstarts,
+            variance_reduction=variance_reduction,
+            candidate_locations=candidate_locations,
+            candidate_values=candidate_values
+        )
+
+        return -μx
+    end
+
+    function grollout!(g, x)
+        tp.x0[:] = x
+        μx, ∇μx, _, _ = simulate_trajectory(sur, tp, xstarts,
+            variance_reduction=variance_reduction,
+            candidate_locations=candidate_locations,
+            candidate_values=candidate_values
+        )
+        g[:] = -∇μx
+    end
+
+    return (rollout, grollout!)
+end
+
+
 function rollout_solver_saa(;
     sur::RBFsurrogate,
     tp::TrajectoryParameters,
@@ -408,24 +441,23 @@ function rollout_solver_saa(;
     final_locations::SharedMatrix{Float64},
     final_evaluations::SharedArray{Float64}
     )
+    rollout_estimator, grollout_estimator! = SAA_constructor(
+        sur, tp, xstarts, variance_reduction=varred,
+        candidate_locations=candidate_locations,
+        candidate_values=candidate_values
+    )
+
     for i in 1:size(batch, 2)
         # Update start of trajectory for each point in the batch
         tp.x0 = batch[:, i]
 
         # Perform stochastic gradient ascent on the point in the batch
-        result = stochastic_gradient_ascent_adam(
-            sur=sur,
-            tp=tp,
-            max_sgd_iters=max_iterations,
-            varred=varred,
-            xstarts=xstarts,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values,
-            αxs=αxs,
-            ∇αxs=∇αxs
+        result = Optim.optimize(
+            rollout_estimator, grollout_estimator!, tp.lbs, tp.ubs, batch[:, i], IPNewton(),
+            Optim.Options(x_tol=1e-3, f_tol=1e-3)    
         )
-        final_locations[:, i] = result.finish
-        final_evaluations[i] = result.final_obj
+        final_locations[:, i] = Optim.minimizer(result)
+        final_evaluations[i] = Optim.minimum(result)
     end
 
     # Find the point in the batch that maximizes the rollout acquisition function
