@@ -64,6 +64,9 @@ function parse_command_line(args)
         "--variance-reduction"
             action = :store_true
             help = "Use EI as a control variate for variance reduction"
+        "--deterministic-solve"
+            action = :store_true
+            help = "Use SAA to solve acquisition function"
     end
 
     parsed_args = parse_args(args, parser)
@@ -222,6 +225,7 @@ function write_metadata_to_file(cli_args)
     batch_size = cli_args["batch-size"]
     sgd_iterations = cli_args["sgd-iterations"]
     should_reduce_variance = haskey(cli_args, "variance-reduction") ? cli_args["variance-reduction"] : false
+    deterministic_solve = haskey(cli_args, "deterministic-solve") ? cli_args["deterministic-solve"] : false
 
     # Get directory for experiment
     self_filename, extension = splitext(basename(@__FILE__))
@@ -242,6 +246,7 @@ function write_metadata_to_file(cli_args)
         println(file, "Batch Size: ", batch_size)
         println(file, "SGD Iterations: ", sgd_iterations)
         println(file, "Should Reduce Variance: ", should_reduce_variance)
+        println(file, "Sample Average Approximation: ", deterministic_solve)
     end
 end
 
@@ -344,6 +349,7 @@ function main(cli_args)
     SGD_ITERATIONS = cli_args["sgd-iterations"]
     SHOULD_REDUCE_VARIANCE = haskey(cli_args, "variance-reduction") ? cli_args["variance-reduction"] : false
     FUNCTION_NAME = cli_args["function-name"]
+    DETERMINISTIC_SOLVE = haskey(cli_args, "deterministic-solve") ? cli_args["deterministic-solve"] : false
 
     # Establish the synthetic functions we want to evaluate our algorithms on.
     testfn_payloads = (
@@ -412,6 +418,7 @@ function main(cli_args)
     println("    Batch size: $(BATCH_SIZE)")
     println("    SGD iterations: $(SGD_ITERATIONS)")
     println("    Variance reduction: $(SHOULD_REDUCE_VARIANCE)")
+    println("    Sample Average Approximation: ", DETERMINISTIC_SOLVE)
     
     # Build the test function object
     payload = first([p for p in testfn_payloads if p.name == FUNCTION_NAME])
@@ -480,8 +487,10 @@ function main(cli_args)
     final_locations = SharedMatrix{Float64}(length(tp.x0), size(batch, 2))
     final_evaluations = SharedArray{Float64}(size(batch, 2))
 
+    rollout_solver = DETERMINISTIC_SOLVE ? rollout_solver_saa : distributed_stochastic_rollout_solver
+
     for trial in 1:NUMBER_OF_TRIALS
-        try
+        # try
             println("($(payload.name)) Trial $(trial) of $(NUMBER_OF_TRIALS)...")
             # Initialize surrogate model
             Xinit = initial_samples[:, trial:trial]
@@ -496,7 +505,13 @@ function main(cli_args)
 
                 # Solve the acquisition function
                 timed_outcome = @timed begin
-                xbest, fbest = distributed_rollout_solver(
+                # xbest, fbest = distributed_stochastic_rollout_solver(
+                #     sur=sur, tp=tp, xstarts=initial_guesses, batch=batch, max_iterations=SGD_ITERATIONS,
+                #     candidate_locations=candidate_locations, candidate_values=candidate_values,
+                #     αxs=αxs, ∇αxs=∇αxs, final_locations=final_locations, final_evaluations=final_evaluations,
+                #     varred=SHOULD_REDUCE_VARIANCE
+                # )
+                xbest, fbest = rollout_solver(
                     sur=sur, tp=tp, xstarts=initial_guesses, batch=batch, max_iterations=SGD_ITERATIONS,
                     candidate_locations=candidate_locations, candidate_values=candidate_values,
                     αxs=αxs, ∇αxs=∇αxs, final_locations=final_locations, final_evaluations=final_evaluations,
@@ -524,12 +539,12 @@ function main(cli_args)
             write_gap_to_csv(rollout_gaps, trial, rollout_csv_file_path)
             write_observations_to_csv(sur.X, get_observations(sur), trial, rollout_observation_csv_file_path)
             write_allocations_to_csv(rollout_allocations, trial, rollout_allocations_file_path)
-        catch failure_error
-            msg = "($(payload.name)) Trial $(trial) failed with error: $(failure_error)"
-            self_filename, extension = splitext(basename(@__FILE__))
-            filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
-            write_error_to_disk(filename, msg)
-        end
+        # catch failure_error
+        #     msg = "($(payload.name)) Trial $(trial) failed with error: $(failure_error)"
+        #     self_filename, extension = splitext(basename(@__FILE__))
+        #     filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
+        #     write_error_to_disk(filename, msg)
+        # end
     end
 
     println("Completed")
