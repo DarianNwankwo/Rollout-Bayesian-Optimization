@@ -5,6 +5,7 @@ using LinearAlgebra
 using Optim
 using ForwardDiff
 using Distributed
+using Statistics
 
 
 # Rename to rollout once refactor is complete
@@ -109,7 +110,6 @@ function rollout!(
             T.fs, lbs, ubs, xstarts,
             candidate_locations=candidate_locations, candidate_values=candidate_values
         )
-        # xnext = multistart_ei_solve(T.fs, lbs, ubs, xstarts)
 
         # Draw fantasized sample at proposed location after base acquisition solve
         fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=rnstream[:, j+1])
@@ -117,7 +117,6 @@ function rollout!(
         # Placeholder for jacobian matrix
         δxi_jacobian::Matrix{Float64} = zeros(length(xnext), length(xnext))
         # Intermediate matrices before summing placeholder
-        # Create a type for an array of matrices
         δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
 
         total_observations = T.mfs.known_observed + T.mfs.fantasies_observed
@@ -199,7 +198,6 @@ function α(T::Trajectory)
     fmini = minimum(get_observations(T.s))
     best_ndx, best_step = best(T)
     fb = best_step.y
-    # println("Best Index: $best_ndx")
     return max(fmini - fb, 0.)
 end
 
@@ -228,8 +226,13 @@ function simulate_trajectory(
     xstarts::Matrix{Float64};
     variance_reduction::Bool=false,
     candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64}
+    candidate_values::SharedArray{Float64},
+    get_distribution::Bool=false
     )
+    if variance_reduction
+        EI = s(tp.x0).EI
+        fhats = zeros(tp.mc_iters)
+    end
     αxs, ∇αxs = zeros(tp.mc_iters), zeros(length(tp.x0), tp.mc_iters)
     deepcopy_s = Base.deepcopy(s)
 
@@ -242,22 +245,30 @@ function simulate_trajectory(
             candidate_locations=candidate_locations,
             candidate_values=candidate_values
         )
+        if variance_reduction
+            fhats[sample_ndx] = first(sample(T)).y
+        end
         
         # Evaluate rolled out trajectory
         αxs[sample_ndx] = α(T)
         ∇αxs[:, sample_ndx] .= ∇α(T)
     end
 
+    μ̂ = sum(αxs) / tp.mc_iters
+
     # Average trajectories
-    μx::Float64 = sum(αxs) / tp.mc_iters
+    if variance_reduction
+        c = cov(αxs, fhats) / var(fhats)
+        μx = μ̂ - (c / tp.mc_iters) * sum(fhats .- EI)
+    else
+        μx = μ̂
+    end
     ∇μx::Vector{Float64} = vec(sum(∇αxs, dims=2) / tp.mc_iters)
     stderr_μx = sqrt(sum((αxs .- μx) .^ 2) / (tp.mc_iters - 1))
     stderr_∇μx = sqrt(sum((∇αxs .- ∇μx) .^ 2) / (tp.mc_iters - 1))
 
-    if variance_reduction
-        sx = s(tp.x0)
-        μx += sx.EI
-        ∇μx .+= sx.∇EI
+    if get_distribution
+        return μx, ∇μx, stderr_μx, stderr_∇μx, αxs
     end
 
     return μx, ∇μx, stderr_μx, stderr_∇μx
