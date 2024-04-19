@@ -1,5 +1,0 @@
-Budget: 50
-Number of Trials: 30
-Number of Starts: 8
-Data Directory: ../various-horizon-shortrun-comparison
-Should Optimize: true

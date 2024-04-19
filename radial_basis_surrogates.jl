@@ -22,25 +22,20 @@ struct RBFsurrogate
     y::Vector{Float64}
     c::Vector{Float64}
     σn2::Float64
-    ymean::Float64
 end
 
 function fit_surrogate(ψ::RBFfun, X::Matrix{Float64}, y::Vector{Float64}; σn2=1e-6)
     d, N = size(X)
     K = eval_KXX(ψ, X, σn2=σn2)
     L = cholesky(Hermitian(K)).L
-    ymean = mean(y)
-    y = y .- ymean
     c = L'\(L\y)
-    return RBFsurrogate(ψ, X, K, L, y, c, σn2, ymean)
+    return RBFsurrogate(ψ, X, K, L, y, c, σn2)
 end
 
 # TODO: Change to a function that updates the object in place
 function update_surrogate(s::RBFsurrogate, xnew::Vector{Float64}, ynew::Float64)
     X = hcat(s.X, xnew)
-    y = vcat(s.y .+ s.ymean, ynew) # Recovery y and add new observation
-    ymean = mean(y) # Compute new mean of observations
-    y .-= ymean # Offset observations to be zero mean
+    y = vcat(s.y, ynew)
 
     # Update covariance matrix and it's cholesky factorization
     KxX = eval_KxX(s.ψ, xnew, s.X)
@@ -69,22 +64,20 @@ function update_surrogate(s::RBFsurrogate, xnew::Vector{Float64}, ynew::Float64)
     L = update_cholesky(K, s.L)
     c = L'\(L\y)
 
-    return RBFsurrogate(s.ψ, X, K, L, y, c, s.σn2, ymean)
+    return RBFsurrogate(s.ψ, X, K, L, y, c, s.σn2)
 end
 
 # TODO: Change to a function that updates the object in place
 function update_surrogate_slow(s::RBFsurrogate, xnew::Vector{Float64}, ynew::Float64)
     X = hcat(s.X, xnew)
-    y = vcat(s.y .+ s.ymean, ynew) # Recovery y and add new observation
-    ymean = mean(y) # Compute new mean of observations
-    y .-= ymean # Offset observations to be zero mean
+    y = vcat(s.y, ynew)
 
     # Update covariance matrix and it's cholesky factorization
     K = eval_KXX(s.ψ, X)
     L = cholesky(K).L
     c = L'\(L\y)
 
-    return RBFsurrogate(s.ψ, X, K, L, y, c, s.σn2, ymean)
+    return RBFsurrogate(s.ψ, X, K, L, y, c, s.σn2)
 end
 
 function plot1D(s::RBFsurrogate; xmin=-1, xmax=1, npts=100)
@@ -113,7 +106,7 @@ function eval(s::RBFsurrogate, x::Vector{Float64}, ymin::Real)
     sx.kx = () -> eval_KxX(s.ψ, x, s.X)
     sx.∇kx = () -> eval_∇KxX(s.ψ, x, s.X)
 
-    sx.μ = () -> dot(sx.kx, s.c) + s.ymean
+    sx.μ = () -> dot(sx.kx, s.c)
     sx.∇μ = () -> sx.∇kx * s.c
     sx.Hμ = function()
         H = zeros(d, d)
@@ -225,11 +218,6 @@ end
 eval(s::RBFsurrogate, x::Vector{Float64}) = eval(s, x, minimum(get_observations(s)))
 (s::RBFsurrogate)(x::Vector{Float64}) = eval(s, x)
 
-function gp_draw(s::RBFsurrogate, xloc; stdnormal)
-    sx = s(xloc)
-    return sx.μ + sx.σ*stdnormal
-end
-
 # ------------------------------------------------------------------
 # 2. Operations on Fantasized GP/RBF surrogates
 # ------------------------------------------------------------------
@@ -241,12 +229,26 @@ mutable struct FantasyRBFsurrogate
     y::Vector{Float64}
     c::Vector{Float64}
     σn2::Float64
-    ymean::Float64
     h::Int64
     known_observed::Int64
     fantasies_observed::Int64
 end
 
+
+function gp_draw(s::Union{RBFsurrogate, FantasyRBFsurrogate}, xloc; stdnormal)
+    sx = s(xloc)
+
+    return sx.μ + sx.σ*stdnormal
+end
+
+function gp_draw_fg(s::Union{RBFsurrogate, FantasyRBFsurrogate}, xloc; stdnormal::AbstractVector)
+    sx = s(xloc)
+
+    f = sx.μ + sx.σ .* stdnormal[1]
+    ∇f = sx.∇μ + sx.∇σ .* stdnormal[2:end]
+
+    return (f, ∇f)
+end
 """
 Fitting the fantasy surrogate consist of using the previous surrogate's covariance
 factorization and preallocating space for the remaining factorization when fantasy
@@ -262,7 +264,7 @@ function fit_fsurrogate(s::RBFsurrogate, h::Int64)
     slice = 1:N
     X[:, slice] = @view s.X[:,:] 
     return FantasyRBFsurrogate(
-        s.ψ, X, K, L, deepcopy(s.y), deepcopy(s.c), deepcopy(s.σn2), deepcopy(s.ymean), h, N, 0
+        s.ψ, X, K, L, deepcopy(s.y), deepcopy(s.c), deepcopy(s.σn2), h, N, 0
     )
 end
 
@@ -280,8 +282,7 @@ function reset_fsurrogate!(fs::FantasyRBFsurrogate, s::RBFsurrogate)
     fs.L[N+1:end, N+1:end] .= 0.0
     fs.L[1:N, N+1:end] .= 0.0
     fs.L[N+1:end, 1:N] .= 0.0
-    # Reset y and ymean
-    fs.ymean = s.ymean
+    # Reset y
     fs.y = s.y
     fs.fantasies_observed = 0
     # Update coefficient vector
@@ -294,9 +295,7 @@ function update_fsurrogate!(fs::FantasyRBFsurrogate, xnew::Vector{Float64}, ynew
     update_ndx = fs.known_observed + fs.fantasies_observed + 1
     # We can use the same logic here for preallocating space for X
     fs.X[:, update_ndx] = xnew
-    fs.y = vcat(fs.y .+ fs.ymean, ynew) # Recovery y and add new observation
-    fs.ymean = mean(fs.y) # Compute new mean of observations
-    fs.y .-= fs.ymean # Offset observations to be zero mean
+    fs.y = vcat(fs.y, ynew)
 
     # Update covariance matrix and it's cholesky factorization
     KxX = eval_KxX(fs.ψ, xnew, fs.X[:, 1:update_ndx-1])
@@ -343,7 +342,7 @@ function eval(fs::FantasyRBFsurrogate, x::Vector{Float64}, ymin::Real)
     sx.kx = () -> eval_KxX(fs.ψ, x, fs.X[:, slice])
     sx.∇kx = () -> eval_∇KxX(fs.ψ, x, fs.X[:, slice])
 
-    sx.μ = () -> dot(sx.kx, fs.c) + fs.ymean
+    sx.μ = () -> dot(sx.kx, fs.c)
     sx.∇μ = () -> sx.∇kx * fs.c
     sx.Hμ = function()
         H = zeros(d, d)
@@ -454,7 +453,7 @@ function eval(fs::FantasyRBFsurrogate, x::Vector{Float64}, ymin::Real)
     return sx
 end
 
-eval(fs::FantasyRBFsurrogate, x::Vector{Float64}) = eval(fs, x, minimum(fs.y) + fs.ymean)
+eval(fs::FantasyRBFsurrogate, x::Vector{Float64}) = eval(fs, x, minimum(fs.y))
 (fs::FantasyRBFsurrogate)(x::Vector{Float64}) = eval(fs, x)
 
 function plot1D(s::FantasyRBFsurrogate; xmin=-1, xmax=1, npts=100)
@@ -482,7 +481,6 @@ mutable struct δRBFsurrogate
     K::Matrix{Float64}
     y::Vector{Float64}
     c::Vector{Float64}
-    ymean::Float64
 end
 
 function fit_δsurrogate(fs::FantasyRBFsurrogate, δX::Matrix{Float64}, ∇ys::Vector{Vector{Float64}})
@@ -491,12 +489,10 @@ function fit_δsurrogate(fs::FantasyRBFsurrogate, δX::Matrix{Float64}, ∇ys::V
     δK = zeros(N+fs.h+1, N+fs.h+1)
     δK[1:N, 1:N] = eval_δKXX(fs.ψ, fs.X[:, slice], δX)
     δy = [dot(∇ys[j], δX[:,j]) for j=1:N]
-    δymean = mean(δy)
-    δy .-= δymean
     δc = fs.L[slice, slice]' \ (fs.L[slice, slice] \ (δy - δK[slice, slice]*fs.c))
     δXpreallocate = zeros(d, N+fs.h+1)
     δXpreallocate[:, slice] = δX
-    return δRBFsurrogate(fs, δXpreallocate, δK, δy, δc, δymean)
+    return δRBFsurrogate(fs, δXpreallocate, δK, δy, δc)
 end
 
 
@@ -504,10 +500,7 @@ function update_δsurrogate!(δs::δRBFsurrogate, ufs::FantasyRBFsurrogate, δx:
     update_ndx = ufs.known_observed + ufs.fantasies_observed
     d, N = size(ufs.X, 1), ufs.known_observed + ufs.fantasies_observed
     # Recover the original perturbation vector and add new perturbation
-    δs.y = vcat(δs.y .+ δs.ymean, dot(∇y, δx))
-    # Update the perturbation mean and offset to perturbation vector
-    δs.ymean = mean(δs.y)
-    δs.y .-= δs.ymean
+    δs.y = vcat(δs.y, dot(∇y, δx))
 
     # Update the perturbation to the covariance matrix
     δs.X[:, update_ndx] = δx
@@ -541,7 +534,7 @@ function eval(δs :: δRBFsurrogate, sx, δymin)
     δsx.kx  = () -> eval_δKxX(fs.ψ, x, fs.X[:, slice], δs.X[:, slice])
     δsx.∇kx = () -> eval_δ∇KxX(fs.ψ, x, fs.X[:, slice], δs.X[:, slice])
 
-    δsx.μ  = () -> δsx.kx'*fs.c + sx.kx'*δs.c + δs.ymean
+    δsx.μ  = () -> δsx.kx'*fs.c + sx.kx'*δs.c
     δsx.∇μ = () -> δsx.∇kx*fs.c + sx.∇kx*δs.c
 
     δsx.σ  = () -> (-2*δsx.kx'*sx.w + sx.w'*(δs.K[slice, slice]*sx.w)) / (2*sx.σ)
@@ -559,8 +552,8 @@ end
 
 function eval(δs :: δRBFsurrogate, sx)
     ymin, j_ymin = findmin(δs.fs.y)
-    δymin = δs.y[j_ymin] + δs.ymean
-    eval(δs, sx, δymin)
+    δymin = δs.y[j_ymin]
+    return eval(δs, sx, δymin)
 end
 
 (δs :: δRBFsurrogate)(sx) = eval(δs, sx)
@@ -577,8 +570,6 @@ mutable struct MultiOutputFantasyRBFsurrogate
     ∇y::Matrix{Float64}
     c::Vector{Float64}
     σn2::Float64
-    ymean::Float64
-    ∇ymean::Vector{Float64}
     h::Int64
     known_observed::Int64
     fantasies_observed::Int64
@@ -631,7 +622,6 @@ function fit_multioutput_fsurrogate(s::RBFsurrogate, h::Int64)
 
     # Store known history observations separately from fantasized function and gradient values
     ∇y = Matrix{Float64}(undef, d, 0)
-    ∇ymean = zeros(d)
 
     # Initial solve of the linear system with only known observations
     c = L[1:N, 1:N]' \ (L[1:N, 1:N] \ s.y)
@@ -640,8 +630,7 @@ function fit_multioutput_fsurrogate(s::RBFsurrogate, h::Int64)
     fantasies_observed = 0
 
     return MultiOutputFantasyRBFsurrogate(
-        s.ψ, X, K, L, deepcopy(s.y), ∇y, c, deepcopy(s.σn2), deepcopy(s.ymean),
-        ∇ymean, h, known_observed, fantasies_observed
+        s.ψ, X, K, L, deepcopy(s.y), ∇y, c, deepcopy(s.σn2), h, known_observed, fantasies_observed
     )
 end
 
@@ -656,8 +645,6 @@ function reset_mfsurrogate!(mfs::MultiOutputFantasyRBFsurrogate, s::RBFsurrogate
     mfs.fantasies_observed = 0
 
     # Store known history observations separately from fantasized function and gradient values
-    mfs.∇ymean = zeros(d)
-    mfs.ymean = s.ymean
     mfs.y = copy(s.y)
 
     # Initial solve of the linear system with only known observations
@@ -669,10 +656,6 @@ end
 function update_multioutput_fsurrogate!(s::MultiOutputFantasyRBFsurrogate, xnew::Vector{Float64},
     ynew::Float64, ∇ynew::Vector{Float64})
     @assert s.fantasies_observed < s.h + 1 "Cannot add more fantasies than the number of fantasies specified in the surrogate"
-    if s.fantasies_observed == 0
-        s.∇ymean = ∇ynew
-    end
-
     update_ndx = s.known_observed + s.fantasies_observed + 1
     d, N = size(s.X, 1), s.known_observed + s.fantasies_observed
 
@@ -739,23 +722,8 @@ function update_multioutput_fsurrogate!(s::MultiOutputFantasyRBFsurrogate, xnew:
     ###########################################################################################
 
     # Add new observation to known observations
-    y = vcat(s.y .+ s.ymean, ynew) # Recover inherent y and add new observation
-    s.ymean = mean(y) # Compute the updated mean
-    s.y = y .- s.ymean
-
-    # Recover the inherent ∇y and add new observation
-    ∇y = Matrix{Float64}(undef, d, 0)
-    for j in 1:size(s.∇y, 2)
-        ∇y = hcat(∇y, s.∇y[:, j] .+ s.∇ymean)
-    end
-    ∇y = hcat(∇y, ∇ynew)
-    s.∇ymean = vec(mean(∇y, dims=2)) # Compute the updated gradient mean
-
-    # Offset the recovered ∇y and ∇ynew by the updated gradient mean
-    for j in 1:size(∇y, 2)
-        ∇y[:, j] -= s.∇ymean
-    end
-    s.∇y = ∇y # Subtract the gradient mean from the gradient mean
+    s.y = vcat(s.y, ynew)
+    s.∇y = hcat(s.∇y, ∇ynew)
 
     # Update the linear solve for c = K^-1 * y
     slice = 1:s.known_observed + s.fantasies_observed * (d + 1)
@@ -782,36 +750,29 @@ function eval(ms::MultiOutputFantasyRBFsurrogate, x::Vector{Float64}, ymin::Real
     # Need to refactor eval_mixed_KxX
     # msx.kx = () -> eval_mixed_KxX(ms.ψ, ms.X[:, 1:N], x; j_∇=ms.known_observed+1)'
     msx.kx = () -> eval_mixed_KxX(ms, x)
-    msx.μ = function ()
-        μ = msx.kx * ms.c
-        μ[1] += ms.ymean
-        μ[2:end] += ms.∇ymean
-        return μ
-    end
+    msx.μ = () -> msx.kx * ms.c
 
     msx.w = () -> ms.L[1:slice, 1:slice]' \ (ms.L[1:slice, 1:slice] \ msx.kx')
-    # msx.w = function()
-    #     KxX = msx.kx
-    #     KxX_t = [KxX[1, :]'; -KxX[2:end, :]]'
-    #     return ms.L[1:slice, 1:slice]' \ (ms.L[1:slice, 1:slice] \ KxX_t)
-    # end
-    msx.σ = () -> sqrt.(
-        diag(eval_Dk(ms.ψ, zeros(d); D=d) - msx.kx * msx.w)
-    )
+    msx.σ = () -> cholesky(
+        Symmetric(eval_Dk(ms.ψ, zeros(d); D=d) - msx.kx * msx.w)
+    ).U
     
     return msx
 end
 
 function eval(s::MultiOutputFantasyRBFsurrogate, x::Vector{Float64})
     # Should this be minimum of get_observations?
-    y = s.y[1:s.known_observed] .+ s.ymean
+    y = s.y[1:s.known_observed]
     return eval(s, x, minimum(y))
 end
 (s::MultiOutputFantasyRBFsurrogate)(x::Vector{Float64}) = eval(s, x)
 
-function gp_draw(mofs::MultiOutputFantasyRBFsurrogate, x::Vector{Float64}; stdnormal::Vector{Float64})::Tuple{Float64, Vector{Float64}}
+function gp_draw(
+    mofs::MultiOutputFantasyRBFsurrogate,
+    x::AbstractVector;
+    stdnormal::AbstractVector)::Tuple{Float64, Vector{Float64}}
     mofsx = mofs(x)
-    f_and_∇f =  mofsx.μ + mofsx.σ .* stdnormal
+    f_and_∇f =  mofsx.μ + mofsx.σ * stdnormal
     f::Float64, ∇f::Vector{Float64} = f_and_∇f[1], f_and_∇f[2:end]
     return f, ∇f
 end
@@ -840,11 +801,11 @@ posterior distribution of the function value and its gradient at x.
 """
 
 function get_observations(s::Union{RBFsurrogate, FantasyRBFsurrogate, MultiOutputFantasyRBFsurrogate})
-    return s.y .+ s.ymean
+    return s.y
 end
 
 function get_grad_observations(s::MultiOutputFantasyRBFsurrogate)
-    return s.∇y .+ s.∇ymean
+    return s.∇y
 end
 
 # ------------------------------------------------------------------

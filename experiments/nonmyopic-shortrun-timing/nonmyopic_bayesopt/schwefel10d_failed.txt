@@ -1,1 +1,0 @@
-(schwefel10d) Trial 28 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007fb6e53b2400)])

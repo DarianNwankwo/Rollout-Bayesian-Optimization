@@ -34,23 +34,6 @@ in the surrogate at the initial point.
 - TODO: Fix the logic associated with maintaining the minimum found along the sample path vs.
 that of the minimum from the best value known from the known locations.
 """
-# function Trajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)
-#     # The ground truth surrogate is zero mean, so when we sample from our GP, we
-#     # need to add the mean back in when we are updating the surrogate.
-#     fmin = minimum(s.y) + s.ymean
-#     d, N = size(s.X)
-
-#     ∇ys = [zeros(d) for i in 1:N]
-#     δX = zeros(d, N)
-
-#     fsur = fit_fsurrogate(s, h)
-#     δsur = fit_δsurrogate(fsur, δX, ∇ys)
-#     mfsur = fit_multioutput_fsurrogate(s, h)
-
-#     opt_HEI = Matrix{Float64}(I(d))
-
-#     return Trajectory(s, fsur, δsur, mfsur, opt_HEI, fmin, x0, h)
-# end
 
 
 function update_trajectory!(

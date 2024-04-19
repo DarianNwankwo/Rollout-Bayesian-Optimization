@@ -1,1 +1,0 @@
-(schwefel3d) Trial 46 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007f561819f3a0)])

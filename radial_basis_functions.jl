@@ -144,14 +144,13 @@ function eval_Dk(rbf::RBFfun, r::Vector{Float64}; D::Int64)
             ∇K -HK]
 end
 
-function eval_DKxX(rbf :: RBFfun, x::Vector{Float64},
-    X::Matrix{Float64}; D::Int)
+function eval_DKxX(rbf :: RBFfun, x::Vector{Float64}, X::Matrix{Float64}; D::Int)
     M, N = size(X)
-    KxX = eval_Dk(rbf, x-X[:,1], D=D)
+    KxX = eval_Dk(rbf, x - (@view X[:,1]), D=D)
     for j = 2:N
         KxX = hcat(
             KxX,
-            eval_Dk(rbf, x-X[:,j], D=D)
+            eval_Dk(rbf, x - (@view X[:,j]), D=D)
         )
     end
 
