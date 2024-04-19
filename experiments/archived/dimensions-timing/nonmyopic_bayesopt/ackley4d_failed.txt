@@ -1,0 +1,1 @@
+(ackley4d) Trial 1 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007efda8d61140)])

@@ -1,0 +1,3 @@
+(hartmann6d) Trial 60 of 60 failed with error: AssertionError("isfinite(phi_c) && isfinite(dphi_c)")(hartmann6d) Trial 6 of 30 failed with error: AssertionError("isfinite(phi_c) && isfinite(dphi_c)")
+(hartmann6d) Trial 24 of 30 failed with error: AssertionError("isfinite(phi_c) && isfinite(dphi_c)")
+(hartmann6d) Trial 30 of 30 failed with error: AssertionError("isfinite(phi_c) && isfinite(dphi_c)")

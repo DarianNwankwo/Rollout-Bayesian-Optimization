@@ -1,0 +1,1 @@
+(hartmann6d) Trial 30 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007f2362f9b9e0)])

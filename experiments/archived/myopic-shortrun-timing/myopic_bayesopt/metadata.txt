@@ -1,0 +1,5 @@
+Budget: 15
+Number of Trials: 30
+Number of Starts: 8
+Data Directory: ../myopic-shortrun-timing
+Should Optimize: true
