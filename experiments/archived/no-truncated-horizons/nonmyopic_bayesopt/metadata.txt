@@ -1,0 +1,11 @@
+Budget: 20
+Number of Trials: 30
+Number of Starts: 8
+Data Directory: ../no-truncated-horizons
+Should Optimize: true
+Horizon: 1
+MC Samples: 100
+Batch Size: 8
+SGD Iterations: 50
+Should Reduce Variance: true
+Should Truncate Horizon: false

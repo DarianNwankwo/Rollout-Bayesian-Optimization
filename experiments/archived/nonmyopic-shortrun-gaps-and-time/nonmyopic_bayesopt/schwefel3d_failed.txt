@@ -1,0 +1,1 @@
+(schwefel3d) Trial 45 failed with error: CompositeException(Any[TaskFailedException(Task (failed) @0x00007ff1c5b0a400)])
