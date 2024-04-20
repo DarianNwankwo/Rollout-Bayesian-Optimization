@@ -60,14 +60,15 @@ using CSV
 using DataFrames
 using Dates
 using Distributed
+using SharedArrays
+
+
+Distributed.addprocs(cli_args["nworkers"])
 
 
 @everywhere include("../testfns.jl")
 @everywhere include("../rollout.jl")
 @everywhere include("../utils.jl")
-
-
-Distributed.addprocs(cli_args["nworkers"])
 
 
 function create_time_csv_file(
@@ -386,7 +387,7 @@ function knowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M
         guess = initial_guesses[:, j]
         result = optimize(
             kgx,
-            lbs, ubs, guess, Fminbox(LBFGS()),
+            lbs, ubs, guess, Fminbox(LBFGS(linesearch=Optim.LineSearches.BackTracking(order=2))),
             Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3., iterations=100)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
@@ -398,6 +399,33 @@ function knowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M
 
     return final_minimizer
 end
+
+@everywhere function dknowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M=100)
+    kgx = knowledge_gradient_constructor(s, lbs, ubs, guesses=initial_guesses, M=M)
+    
+    d, N = size(initial_guesses)
+    candidate_minimizers = SharedMatrix{Float64}(d, N)
+    candidate_minimums = SharedArray{Float64}(N)
+
+    @sync @distributed for j in 1:size(initial_guesses, 2)
+        print("|")
+        guess = initial_guesses[:, j]
+        result = optimize(
+            kgx,
+            lbs, ubs, guess,
+            Fminbox(LBFGS(linesearch=Optim.LineSearches.BackTracking(order=2))),
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3.)
+        )
+        candidate_minimizers[:, j] = Optim.minimizer(result)
+        candidate_minimums[j] = Optim.minimum(result)
+    end
+    
+    mini_value, index = findmin(candidate_minimums)
+    minimizer = candidate_minimizers[:, index]
+
+    return (minimizer, mini_value)
+end
+
 
 
 function random_solver(s::RBFsurrogate, lbs, ubs; initial_guesses)
@@ -623,7 +651,7 @@ function main()
         ei_solver,
         ucb_solver,
         random_solver,
-        knowledge_gradient_solver
+        dknowledge_gradient_solver
     ]
 
     # Write the metadata to disk
@@ -633,7 +661,7 @@ function main()
     time_elapsed = 0.
 
     for trial in 1:NUMBER_OF_TRIALS
-        # try
+        try
             println("($(payload.name)) Trial $(trial) of $(NUMBER_OF_TRIALS)...")
             # Initialize surrogate model
             Xinit = initial_samples[:, trial:trial]
@@ -686,12 +714,12 @@ function main()
                     all_surs[i].X, get_observations(all_surs[i]), trial, all_observation_csv_file_paths[i]
                 )
             end
-    #     catch failure_error
-    #         msg = "($(payload.name)) Trial $(trial) of $(NUMBER_OF_TRIALS) failed with error: $(failure_error)\n"
-    #         self_filename, extension = splitext(basename(@__FILE__))
-    #         filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
-    #         write_error_to_disk(filename, msg)
-    #     end
+        catch failure_error
+            msg = "($(payload.name)) Trial $(trial) of $(NUMBER_OF_TRIALS) failed with error: $(failure_error)\n"
+            self_filename, extension = splitext(basename(@__FILE__))
+            filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
+            write_error_to_disk(filename, msg)
+        end
     end
 end
 

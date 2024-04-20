@@ -490,7 +490,7 @@ function main(cli_args)
     rollout_solver = DETERMINISTIC_SOLVE ? rollout_solver_saa : distributed_stochastic_rollout_solver
 
     for trial in 1:NUMBER_OF_TRIALS
-        # try
+        try
             println("($(payload.name)) Trial $(trial) of $(NUMBER_OF_TRIALS)...")
             # Initialize surrogate model
             Xinit = initial_samples[:, trial:trial]
@@ -539,12 +539,12 @@ function main(cli_args)
             write_gap_to_csv(rollout_gaps, trial, rollout_csv_file_path)
             write_observations_to_csv(sur.X, get_observations(sur), trial, rollout_observation_csv_file_path)
             write_allocations_to_csv(rollout_allocations, trial, rollout_allocations_file_path)
-        # catch failure_error
-        #     msg = "($(payload.name)) Trial $(trial) failed with error: $(failure_error)"
-        #     self_filename, extension = splitext(basename(@__FILE__))
-        #     filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
-        #     write_error_to_disk(filename, msg)
-        # end
+        catch failure_error
+            msg = "($(payload.name)) Trial $(trial) failed with error: $(failure_error)"
+            self_filename, extension = splitext(basename(@__FILE__))
+            filename = DATA_DIRECTORY * "/" * self_filename * "/" * payload.name * "_failed.txt"
+            write_error_to_disk(filename, msg)
+        end
     end
 
     println("Completed")

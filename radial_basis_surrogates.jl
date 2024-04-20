@@ -936,3 +936,70 @@ function optimize_hypers_v(θ, kernel_constructor, X, f;
     rbf = kernel_scale(kernel_constructor, θ)
     θ, fit_surrogate(rbf, X, f)
 end
+
+
+function get_minimum(s, lbs, ubs; guesses)
+    function predictive_mean(x)
+        return s(x).μ
+    end
+
+    function grad_predictive_mean!(g, x)
+        g[:] = s(x).∇μ
+    end
+    
+    function hessian_predictive_mean!(h, x)
+        h .= s(x).Hμ
+    end
+
+    final_minimizer = (guesses[:, 1], Inf)
+    for j in 1:size(guesses, 2)
+        guess = guesses[:, j]
+        df = TwiceDifferentiable(predictive_mean, grad_predictive_mean!, hessian_predictive_mean!, guess)
+        dfc = TwiceDifferentiableConstraints(lbs, ubs)
+        result = optimize(
+            df, dfc, guess, IPNewton(),
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=10, iterations=100)
+        )
+        # result = optimize(
+        #     predictive_mean, grad_predictive_mean!,
+        #     lbs, ubs, guess, Fminbox(LBFGS()), Optim.Options(x_tol=1e-3, f_tol=1e-3)
+        # )
+        cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
+
+        if cur_minimum < final_minimizer[2]
+            final_minimizer = (cur_minimizer, cur_minimum)
+        end
+    end
+
+    return final_minimizer
+end
+
+function distributed_get_minimum(s, lbs, ubs; guesses)
+    function predictive_mean(x)
+        return s(x).μ
+    end
+
+    function grad_predictive_mean!(g, x)
+        g[:] = s(x).∇μ
+    end
+
+    
+    candidate_locations = SharedMatrix{Float64}(1, size(guesses, 2))
+    candidate_values = SharedArray{Float64}(size(guesses, 2))
+    
+    @sync @distributed for j in 1:size(guesses, 2)
+        guess = guesses[:, j]
+        result = optimize(
+            predictive_mean, grad_predictive_mean!,
+            lbs, ubs, guess, Fminbox(LBFGS()), Optim.Options(x_tol=1e-3, f_tol=1e-3)
+        )
+        cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
+        candidate_locations[:, j] = cur_minimizer
+        candidate_values[j] = cur_minimum
+    end
+
+    mini, j_mini = findmin(candidate_values)
+    minimizer = candidate_locations[:, j_mini]
+
+    return minimizer, mini
+end
