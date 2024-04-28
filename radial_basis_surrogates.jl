@@ -755,7 +755,7 @@ function eval(ms::MultiOutputFantasyRBFsurrogate, x::Vector{Float64}, ymin::Real
     msx.w = () -> ms.L[1:slice, 1:slice]' \ (ms.L[1:slice, 1:slice] \ msx.kx')
     msx.σ = () -> cholesky(
         Symmetric(eval_Dk(ms.ψ, zeros(d); D=d) - msx.kx * msx.w)
-    ).U
+    ).L
     
     return msx
 end

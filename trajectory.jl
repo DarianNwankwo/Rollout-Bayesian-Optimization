@@ -52,7 +52,7 @@ end
 
 
 function reset!(T::Trajectory)
-    fmin = minimum(T.s.y) + T.s.ymean
+    fmin = minimum(T.s.y)
     d, N = size(T.s.X)
 
     reset_fsurrogate!(T.fs, T.s)

@@ -152,6 +152,74 @@ function rollout!(
 end
 
 
+function rollout_no_crn!(
+    T::Trajectory,
+    lbs::Vector{Float64},
+    ubs::Vector{Float64};
+    xstarts::Matrix{Float64},
+    candidate_locations::SharedMatrix{Float64},
+    candidate_values::SharedArray{Float64}
+    )
+    # Initial draw at predetermined location not chosen by policy
+    dd = length(T.x0)
+    f0, ∇f0 = gp_draw(T.mfs, T.x0; stdnormal=randn(dd + 1))
+
+    # Update surrogate, perturbed surrogate, and multioutput surrogate
+    update_fsurrogate!(T.fs, T.x0, f0)
+    update_multioutput_fsurrogate!(T.mfs, T.x0, f0, ∇f0)
+
+    # Preallocate for newton solves
+    xnext = zeros(dd)
+
+    # Perform rollout for fantasized trajectories
+    for j in 1:T.h
+        # Solve base acquisition function to determine next sample location
+        xnext .= distributed_multistart_ei_solve(
+            T.fs, lbs, ubs, xstarts,
+            candidate_locations=candidate_locations, candidate_values=candidate_values
+        )
+
+        # Draw fantasized sample at proposed location after base acquisition solve
+        fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=randn(dd + 1))
+       
+        # Placeholder for jacobian matrix
+        δxi_jacobian::Matrix{Float64} = zeros(dd, dd)
+        # Intermediate matrices before summing placeholder
+        δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
+
+        total_observations = T.mfs.known_observed + T.mfs.fantasies_observed
+        for (j, jacobian) in enumerate(T.jacobians)
+            # Compute perturbation to each spatial location
+            P = compute_policy_perturbation(T, xnext, jacobian, total_observations, j)
+            push!(δxi_intermediates, P)
+        end
+
+        # Sum all perturbations
+        δxi_intermediates = reduce(+, δxi_intermediates)
+        # δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
+        if det(T.fs(xnext).HEI) < 1e-16
+            δxi_jacobian .= zeros(dd, dd)
+            # δxi_jacobian .= 0.
+        else
+            δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
+        end
+
+        # Update surrogate, perturbed surrogate, and multioutput surrogate
+        update_fsurrogate!(T.fs, xnext, fi)
+        update_multioutput_fsurrogate!(T.mfs, xnext, fi, ∇fi)
+
+        # Update jacobian matrix
+        push!(T.jacobians, δxi_jacobian)
+
+        if fi < T.fmin
+            T.fmin = fi
+        end
+    end
+
+    return nothing
+end
+
+
 function sample(T::Trajectory)
     @assert T.fs.fantasies_observed == T.h + 1 "Cannot sample from a trajectory that has not been rolled out"
     fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
@@ -225,56 +293,96 @@ function simulate_trajectory(
     s::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64};
-    variance_reduction::Bool=false,
+    variance_reduction::Bool = false,
+    use_crn::Bool = true,
     candidate_locations::SharedMatrix{Float64},
     candidate_values::SharedArray{Float64})
-    if variance_reduction
-        EI = s(tp.x0).EI
-        EIhats = ones(tp.mc_iters)
-        ymin = minimum(get_observations(s))
-    end
     αxs, ∇αxs = zeros(tp.mc_iters), zeros(length(tp.x0), tp.mc_iters)
     deepcopy_s = Base.deepcopy(s)
 
-    for sample_ndx in 1:tp.mc_iters
-        # Rollout trajectory
-        T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
-        rollout!(T, tp.lbs, tp.ubs;
-            rnstream=tp.rnstream_sequence[sample_ndx, :, :],
-            xstarts=xstarts,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values
-        )
-        if variance_reduction
-            EIhats[sample_ndx] = max(ymin - first(sample(T)).y, 0.)
-            # EIhats[sample_ndx] = ymin - first(sample(T)).y
+    if variance_reduction
+        ei_cv = s(tp.x0).EI
+        ei_mc = zeros(tp.mc_iters)
+        ymin = minimum(get_observations(s))
+
+        for sample_ndx in 1:tp.mc_iters
+            # Rollout trajectory
+            T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
+    
+            if use_crn
+                rollout!(T, tp.lbs, tp.ubs;
+                    rnstream=tp.rnstream_sequence[sample_ndx, :, :],
+                    xstarts=xstarts,
+                    candidate_locations=candidate_locations,
+                    candidate_values=candidate_values
+                )
+            else
+                rollout_no_crn!(T, tp.lbs, tp.ubs;
+                    xstarts=xstarts,
+                    candidate_locations=candidate_locations,
+                    candidate_values=candidate_values
+                )
+            end
+    
+            ei_mc[sample_ndx] = max(ymin - first(sample(T)).y, 0.) - ei_cv
+            # Evaluate rolled out trajectory
+            αxs[sample_ndx] = α(T)
+            ∇αxs[:, sample_ndx] .= ∇α(T)
         end
 
-        # Evaluate rolled out trajectory
-        αxs[sample_ndx] = α(T)
-        ∇αxs[:, sample_ndx] .= ∇α(T)
-    end
-
-    μ̂ = sum(αxs) / tp.mc_iters
+        # Optimal coefficientf for control variate
+        c = -cov(αxs, ei_mc) / var(ei_mc)
+        ∇μx = mean(∇αxs, dims=2)
+        std_∇μx = std(∇αxs, mean=∇μx, dims=2)
+        
+        # Variance reduced random variable
+        μx_ei_mc = αxs + c * ei_mc
+        μx_varred = mean(αxs) + c * mean(ei_mc)
+        std_μx = std(μx_ei_mc, mean=μx_varred)
+        return (μx_varred, ∇μx, std_μx, std_∇μx)
+        
+    else
+        for sample_ndx in 1:tp.mc_iters
+            # Rollout trajectory
+            T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
     
+            if use_crn
+                rollout!(T, tp.lbs, tp.ubs;
+                    rnstream=tp.rnstream_sequence[sample_ndx, :, :],
+                    xstarts=xstarts,
+                    candidate_locations=candidate_locations,
+                    candidate_values=candidate_values
+                )
+            else
+                rollout_no_crn!(T, tp.lbs, tp.ubs;
+                    xstarts=xstarts,
+                    candidate_locations=candidate_locations,
+                    candidate_values=candidate_values
+                )
+            end
+    
+            # Evaluate rolled out trajectory
+            αxs[sample_ndx] = α(T)
+            ∇αxs[:, sample_ndx] .= ∇α(T)
+        end
+
+        # Average across trajectories
+        μx = mean(αxs)
+        ∇μx = mean(∇αxs, dims=2)
+        std_μx = std(αxs, mean=μx)
+        std_∇μx = std(∇αxs, mean=∇μx, dims=2)
+
+        return (μx, ∇μx, std_μx, std_∇μx)
+    end    
     # Minimizing constant for control variate
     if variance_reduction
-        c = -cov(αxs, EIhats) / var(EIhats)
-        μx = μ̂ + (c / tp.mc_iters) * sum(EIhats .- EI)
-    else
-        μx = μ̂
+        
+        # μx = μ̂ + (c / tp.mc_iters) * sum(EIhats .- EI)
     end
-
-    # Average trajectories
-    μx::Float64 = sum(αxs) / tp.mc_iters
-    ∇μx::Vector{Float64} = vec(sum(∇αxs, dims=2) / tp.mc_iters)
-    stderr_μx = sqrt(sum((αxs .- μx) .^ 2) / (tp.mc_iters - 1))
-    stderr_∇μx = sqrt(sum((∇αxs .- ∇μx) .^ 2) / (tp.mc_iters - 1))
 
     if variance_reduction
-        return μx, ∇μx, stderr_μx, stderr_∇μx,  EIhats, c
+        return μx, ∇μx, std_μx, std_∇μx,  z, c, cor(αxs, z)
     end
-    return μx, ∇μx, stderr_μx, stderr_∇μx
 end
 
 
