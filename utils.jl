@@ -224,9 +224,9 @@ v: second moment estimate
 function update_x_adam!(x0::Vector{Float64}; ∇g,  λ, β1, β2, ϵ, m, v, lbs, ubs)
     # Print the dimension and name of each parameter in this function
     mt = β1 * m[end] + (1 - β1) * ∇g  # Update first moment estimate
-    push!(m, mt)
+    push!(m, vec(mt))
     vt = β2 * v[end] + (1 - β2) * ∇g.^2  # Update second moment estimate
-    push!(v, vt)
+    push!(v, vec(vt))
     mt_hat = mt / (1 - β1)  # Correct for bias in first moment estimate
     vt_hat = vt / (1 - β2)  # Correct for bias in second moment estimate
     x = x0 + λ * mt_hat ./ (sqrt.(vt_hat) .+ ϵ)  # Compute updated position
@@ -269,6 +269,8 @@ function stochastic_gradient_ascent_adam1(;
         push!(rewards, μx)
         push!(rewards_grads, ∇μx)
 
+
+
         # Check for convergence: gradient is approx 0,
         if length(rewards) > 2 && rewards[end] - rewards[end-1] < 0.
             # println("Objective is small")
@@ -287,6 +289,56 @@ function stochastic_gradient_ascent_adam1(;
         start=xstart, finish=xfinish, final_obj=rewards[end], final_grad=rewards_grads[end], iters=iters, success=true,
         sequence=xall, grads=rewards_grads, obj=rewards
     )
+    return result
+end
+
+function eswavs(;∇f, ∇f_Σ, sample_size)
+    D = length(∇f)
+    m = sample_size
+
+    ratio = sum((∇f .^ 2) ./ ∇f_Σ)
+    return (1. - (m / D) * ratio) > 0.
+end
+
+
+function stochastic_gradient_ascent_adam2(;
+    λ=0.01, β1=0.9, β2=0.999, ϵ=1e-8, ftol=1e-6, gtol=1e-6, varred=true,
+    sur::RBFsurrogate, tp::TrajectoryParameters, max_sgd_iters::Int, xstarts::Matrix{Float64},
+    candidate_locations::SharedMatrix{Float64}, candidate_values::SharedArray{Float64}
+    )
+    tpc = deepcopy(tp)
+    x0 = tpc.x0
+    m = [zeros(size(x0))]
+    v = [zeros(size(x0))]
+    xstart = x0
+    xfinish = x0
+    final_obj = Inf
+
+    iters = 1
+
+    for epoch in 1:max_sgd_iters
+        iters = epoch
+
+        # Compute stochastic estimates of function and gradient
+        μx, ∇μx, μx_std, ∇μx_std = simulate_trajectory(
+            sur, tp, xstarts; variance_reduction=varred,
+            candidate_locations=candidate_locations, candidate_values=candidate_values
+        )
+
+        # Update position and moment estimates
+        tpc.x0 .= update_x_adam!(tpc.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tpc.lbs, ubs=tpc.ubs)
+        final_obj = μx
+
+        # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
+        # by Mahsereci et al.
+        if eswavs(∇f=∇μx, ∇f_Σ=∇μx_std .^ 2, sample_size=tp.mc_iters)
+            xfinish .= tpc.x0
+            break
+        end
+    end
+
+    result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
+
     return result
 end
 

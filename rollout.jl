@@ -331,16 +331,17 @@ function simulate_trajectory(
         end
 
         # Optimal coefficientf for control variate
-        c = -cov(αxs, ei_mc) / var(ei_mc)
+        # c = -cov(αxs, ei_mc) / var(ei_mc)
+        c = [-cov(αxs[1:k], ei_mc[1:k]) / var(ei_mc[1:k]) for k in 2:tp.mc_iters - 1]
         ∇μx = mean(∇αxs, dims=2)
         std_∇μx = std(∇αxs, mean=∇μx, dims=2)
         
         # Variance reduced random variable
-        μx_ei_mc = αxs + c * ei_mc
-        μx_varred = mean(αxs) + c * mean(ei_mc)
+        μx_ei_mc = αxs[2:end - 1] + c[end] .* ei_mc[2:end - 1]
+        μx_varred = mean(αxs[2:end - 1]) + c[end] * mean(ei_mc[2:end - 1])
+        # μx_varred = mean(αxs[2:end - 1]) + mean(c .* ei_mc[2:end - 1])
         std_μx = std(μx_ei_mc, mean=μx_varred)
-        return (μx_varred, ∇μx, std_μx, std_∇μx)
-        
+        return (μx_varred, ∇μx, std_μx, std_∇μx, c)
     else
         for sample_ndx in 1:tp.mc_iters
             # Rollout trajectory
@@ -373,15 +374,6 @@ function simulate_trajectory(
         std_∇μx = std(∇αxs, mean=∇μx, dims=2)
 
         return (μx, ∇μx, std_μx, std_∇μx)
-    end    
-    # Minimizing constant for control variate
-    if variance_reduction
-        
-        # μx = μ̂ + (c / tp.mc_iters) * sum(EIhats .- EI)
-    end
-
-    if variance_reduction
-        return μx, ∇μx, std_μx, std_∇μx,  z, c, cor(αxs, z)
     end
 end
 
@@ -446,7 +438,7 @@ function stochastic_rollout_solver(;
         tp.x0 .= batch[:, i]
 
         # Perform stochastic gradient ascent on the point in the batch
-        batch_results[i] = stochastic_gradient_ascent_adam1(
+        batch_results[i] = stochastic_gradient_ascent_adam2(
             sur=sur,
             tp=tp,
             max_sgd_iters=max_iterations,
