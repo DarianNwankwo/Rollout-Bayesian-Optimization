@@ -63,6 +63,8 @@ is the number of Monte Carlo iterations, D is the dimension of the
 input, and H is our max horizon.
 """
 function gen_low_discrepancy_sequence(samples, dim, horizon)
+    # We need function and gradient samples, so dim here corresponds to the input space.
+    # The +1 here corresponds to the function observation.
     offset = isodd(dim+1) ? 1 : 0
     S = gen_uniform(samples*horizon, dim=dim+1+offset)
     N = box_muller_transform(S)

@@ -294,18 +294,21 @@ function simulate_trajectory(
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64};
     variance_reduction::Bool = false,
+    buffer_size::Int = 100,
     use_crn::Bool = true,
     candidate_locations::SharedMatrix{Float64},
     candidate_values::SharedArray{Float64})
-    αxs, ∇αxs = zeros(tp.mc_iters), zeros(length(tp.x0), tp.mc_iters)
     deepcopy_s = Base.deepcopy(s)
 
     if variance_reduction
+        # We'll sample more to learn a good approximation of the optimal coefficient
+        # for the variance reduction strategy
+        αxs, ∇αxs = zeros(tp.mc_iters + buffer_size), zeros(length(tp.x0), tp.mc_iters + buffer_size)
         ei_cv = s(tp.x0).EI
-        ei_mc = zeros(tp.mc_iters)
+        ei_mc = zeros(tp.mc_iters + buffer_size)
         ymin = minimum(get_observations(s))
 
-        for sample_ndx in 1:tp.mc_iters
+        for sample_ndx in 1:tp.mc_iters + buffer_size
             # Rollout trajectory
             T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
     
@@ -331,18 +334,17 @@ function simulate_trajectory(
         end
 
         # Optimal coefficientf for control variate
-        # c = -cov(αxs, ei_mc) / var(ei_mc)
-        c = [-cov(αxs[1:k], ei_mc[1:k]) / var(ei_mc[1:k]) for k in 2:tp.mc_iters - 1]
-        ∇μx = mean(∇αxs, dims=2)
-        std_∇μx = std(∇αxs, mean=∇μx, dims=2)
+        c = -cov(αxs[1:buffer_size], ei_mc[1:buffer_size]) / var(ei_mc[1:buffer_size])
+        ∇μx = mean(∇αxs[:, buffer_size + 1:end], dims=2)
+        std_∇μx = std(∇αxs[:, buffer_size + 1:end], mean=∇μx, dims=2)
         
         # Variance reduced random variable
-        μx_ei_mc = αxs[2:end - 1] + c[end] .* ei_mc[2:end - 1]
-        μx_varred = mean(αxs[2:end - 1]) + c[end] * mean(ei_mc[2:end - 1])
-        # μx_varred = mean(αxs[2:end - 1]) + mean(c .* ei_mc[2:end - 1])
+        μx_ei_mc = αxs[buffer_size + 1:end] + c .* ei_mc[buffer_size + 1:end]
+        μx_varred = mean(αxs[buffer_size + 1:end]) + c .* mean(ei_mc[buffer_size + 1:end])
         std_μx = std(μx_ei_mc, mean=μx_varred)
         return (μx_varred, ∇μx, std_μx, std_∇μx, c)
     else
+        αxs, ∇αxs = zeros(tp.mc_iters), zeros(length(tp.x0), tp.mc_iters)
         for sample_ndx in 1:tp.mc_iters
             # Rollout trajectory
             T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
@@ -447,6 +449,7 @@ function stochastic_rollout_solver(;
             candidate_locations=candidate_locations,
             candidate_values=candidate_values
         )
+        println("Iterations: $(batch_results[i].iters)")
     end
 
     # Find the point in the batch that maximizes the rollout acquisition function

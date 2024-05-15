@@ -21,7 +21,7 @@ function parse_command_line(args)
         "--starts"
             action = :store_arg
             help = "Number of random starts for inner policy optimization (default: 16)"
-            default = 8
+            default = 16
             arg_type = Int
         "--trials"
             action = :store_arg
@@ -247,7 +247,7 @@ function poi_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=1
         initial_guess = initial_guesses[:, j]
         result = optimize(
             poi, lbs, ubs, initial_guess, Fminbox(LBFGS()),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -293,7 +293,7 @@ function ei_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=10
         dfc = TwiceDifferentiableConstraints(lbs, ubs)
         result = optimize(
             df, dfc, initial_guess, IPNewton(),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -320,7 +320,7 @@ function ucb_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, β=3., max_itera
         initial_guess = initial_guesses[:, j]
         result = optimize(
             ucb, lbs, ubs, initial_guess, Fminbox(LBFGS()),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
             )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -346,7 +346,7 @@ function get_minimum(s::Union{RBFsurrogate, FantasyRBFsurrogate}, lbs, ubs; gues
         guess = guesses[:, j]
         result = optimize(
             predictive_mean, grad_predictive_mean!,
-            lbs, ubs, guess, Fminbox(LBFGS()), Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3.)
+            lbs, ubs, guess, Fminbox(LBFGS()), Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6.)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -379,7 +379,7 @@ function knowledge_gradient_constructor(s::RBFsurrogate, lbs, ubs; guesses, M)
 end
 
 
-function knowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M=64)
+function knowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M=128)
     kgx = knowledge_gradient_constructor(s, lbs, ubs, guesses=initial_guesses, M=M)
 
     final_minimizer = (initial_guesses[:, 1], Inf)
@@ -388,7 +388,7 @@ function knowledge_gradient_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, M
         result = optimize(
             kgx,
             lbs, ubs, guess, Fminbox(LBFGS(linesearch=Optim.LineSearches.BackTracking(order=2))),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -414,7 +414,7 @@ end
             kgx,
             lbs, ubs, guess,
             Fminbox(LBFGS(linesearch=Optim.LineSearches.BackTracking(order=2))),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=3.)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6.)
         )
         candidate_minimizers[:, j] = Optim.minimizer(result)
         candidate_minimums[j] = Optim.minimum(result)

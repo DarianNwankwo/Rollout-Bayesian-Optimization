@@ -21,7 +21,7 @@ function parse_command_line(args)
         "--starts"
             action = :store_arg
             help = "Number of random starts for inner policy optimization (default: 8)"
-            default = 16
+            default = 8
             arg_type = Int
         "--trials"
             action = :store_arg
@@ -31,7 +31,7 @@ function parse_command_line(args)
         "--budget"
             action = :store_arg
             help = "Maximum budget for bayesian optimization (default: 20)"
-            default = 15
+            default = 20
             arg_type = Int
         "--output-dir"
             action = :store_arg
@@ -40,7 +40,7 @@ function parse_command_line(args)
         "--mc-samples"
             action = :store_arg
             help = "Number of Monte Carlo samples for the acquisition function (default: 50 * Horizon)"
-            default = 200
+            default = 50
             arg_type = Int
         "--horizon"
             action = :store_arg
@@ -344,7 +344,7 @@ function main(cli_args)
     DATA_DIRECTORY = cli_args["output-dir"]
     SHOULD_OPTIMIZE = haskey(cli_args, "optimize") ? cli_args["optimize"] : false
     HORIZON = cli_args["horizon"]
-    MC_SAMPLES = cli_args["mc-samples"] #* (HORIZON + 1)
+    MC_SAMPLES = cli_args["mc-samples"] # * (HORIZON + 1)
     BATCH_SIZE = cli_args["batch-size"]
     SGD_ITERATIONS = cli_args["sgd-iterations"]
     SHOULD_REDUCE_VARIANCE = haskey(cli_args, "variance-reduction") ? cli_args["variance-reduction"] : false
@@ -501,16 +501,11 @@ function main(cli_args)
             print("Budget Counter: ")
             for budget in 1:BUDGET
                 # Truncate the horizon as we approach the end of our budget
-                tp.h = min(HORIZON, BUDGET - budget)
+                # tp.h = min(HORIZON, BUDGET - budget)
+                tp.h = budget % 2 == 1 ? 0 : 1
 
                 # Solve the acquisition function
                 timed_outcome = @timed begin
-                # xbest, fbest = distributed_stochastic_rollout_solver(
-                #     sur=sur, tp=tp, xstarts=initial_guesses, batch=batch, max_iterations=SGD_ITERATIONS,
-                #     candidate_locations=candidate_locations, candidate_values=candidate_values,
-                #     αxs=αxs, ∇αxs=∇αxs, final_locations=final_locations, final_evaluations=final_evaluations,
-                #     varred=SHOULD_REDUCE_VARIANCE
-                # )
                 xbest, fbest = rollout_solver(
                     sur=sur, tp=tp, xstarts=initial_guesses, batch=batch, max_iterations=SGD_ITERATIONS,
                     candidate_locations=candidate_locations, candidate_values=candidate_values,
