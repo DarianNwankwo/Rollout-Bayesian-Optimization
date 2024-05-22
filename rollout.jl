@@ -65,25 +65,7 @@ function compute_policy_perturbation(
     return P
 end
 
-"""
-I THINK MY COVARIANCE MEASURES FOR GRADIENTS IS WRONG
 
-If we happen to be near a known location, we shouldn't sample from our multioutput surrogate, but rather our
-ground truth single output surrogate, I suspect. Here is what is going on:
-
-Our first sample on our fantasized trajectory isn't driven by our policy explicitly. It says that if EI told us to sample
-at x0, what is the anticipated behavior, after using EI, for the next h samples. So, our trajectory contains h+1 samples,
-where the first sample is at x0, and the next h samples are driven by EI. So h+1 fantasized samples, h of which are driven
-by EI. When x0 happens to be near a known location, we observe a tendency of the rollout acquisition function to blowup.
-I think this occurs when x0 is a known location that is close to the best thing we've seen thus far.
-
-This means that if EI told us to sample at a known location and then we rollout our trajectory and there is some
-expected reduction in objective, our rollout acquisition function is going to say x0 is a decent location to sample our
-original process at.
-
-When we sample gradient information at x0, when x0 is near a known point, we have a tendency to learn an approximation
-of the underlying function that is not accurate.
-"""
 function rollout!(
     T::Trajectory,
     lbs::Vector{Float64},
