@@ -488,7 +488,8 @@ function eval_δKxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64},
     δKxX = zeros(N)
 
     for j = 1:N
-        δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (δX[:,j])
+        # δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (δX[:,j])
+        δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (-δX[:,j])
     end
 
     return δKxX
