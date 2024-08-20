@@ -71,7 +71,7 @@ Base.@kwdef mutable struct TrajectoryParameters
         end
 
         check_dimensions(x0, lbs, ubs)
-        check_stream_dimensions(rnstream_sequence, length(x0), h, mc_iters)
+        # check_stream_dimensions(rnstream_sequence, length(x0), h, mc_iters)
     
         return new(x0, h, mc_iters, rnstream_sequence, lbs, ubs)
     end

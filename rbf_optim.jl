@@ -38,7 +38,7 @@ function ei_solve(s::SmartFantasyRBFsurrogate, lbs::Vector{Float64}, ubs::Vector
     dfc = TwiceDifferentiableConstraints(lbs, ubs)
     res = optimize(
         df, dfc, xstart, IPNewton(),
-        # Optim.Options(x_tol=1e-3, f_tol=1e-3)
+        Optim.Options(x_tol=1e-3, f_tol=1e-3)
         # Optim.Options(f_tol=1e-16)
     )
 

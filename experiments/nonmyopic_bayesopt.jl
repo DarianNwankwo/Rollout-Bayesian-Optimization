@@ -533,11 +533,11 @@ function main(cli_args)
             
             # Compute the GAP of the surrogate model
             fbest = testfn.f(testfn.xopt[1])
-            rollout_gaps[:] .= measure_gap(get_observations(sur), fbest)
+            rollout_gaps[:] .= measure_gap(sur.y, fbest)
 
             write_time_to_csv(rollout_times, trial, rollout_time_file_path)
             write_gap_to_csv(rollout_gaps, trial, rollout_csv_file_path)
-            write_observations_to_csv(sur.X, get_observations(sur), trial, rollout_observation_csv_file_path)
+            write_observations_to_csv(sur.X, sur.y, trial, rollout_observation_csv_file_path)
             write_allocations_to_csv(rollout_allocations, trial, rollout_allocations_file_path)
         catch failure_error
             msg = "($(payload.name)) Trial $(trial) failed with error: $(failure_error)"
