@@ -20,67 +20,18 @@ include("utils.jl")
 include("testfns.jl")
 
 
-function not_near(x::Vector{Float64}, X::Matrix{Float64}; tol::Float64=1e-6)
-    return all([norm(x - X[:, i]) > tol for i in 1:size(X, 2)])
-end
-
-
-"""
-Where j represents the jth column of all of our observations we want to compute the perturbation of.
-"""
-function compute_policy_perturbation(
-    # T::ForwardTrajectory,
-    T::Trajectory,
-    xnext::Vector{Float64},
-    jacobian_matrix::Matrix{Float64},
-    total_observations::Int,
-    j::Int)::Matrix{Float64}
-    # Setup perturbation matrix where all columns, except 1, are zero.
-    # println("Apply Perturbation to Column $(T.mfs.known_observed + j)")
-    δXi = zeros(size(jacobian_matrix, 1), total_observations)
-
-    # Evaluate surrogate at location from policy solve
-    sxi = T.fs(xnext)
-
-    # Placeholder for collecting all perturbations
-    fantasy_begin_ndx = T.mfs.known_observed + 1
-    # println("Fantasy Begin Index: $(fantasy_begin_ndx)")
-    ∇ys = [zeros(length(xnext)) for i in 1:total_observations]
-    ∇ys[fantasy_begin_ndx + j - 1] = T.mfs.∇y[:, j]
-
-    # Intermediate storage of each column computed in the current perturbation
-    P = zeros(length(xnext), length(xnext))
-    
-    # Perturb the gradient of the policy according to the perturbations in the jacobian matrix
-    for (column_ndx, direction) in enumerate(eachcol(jacobian_matrix))
-        δXi[:, fantasy_begin_ndx + j - 1] = direction
-        # Compute perturbation
-        δs = fit_δsurrogate(T.fs, δXi, ∇ys)
-        δsxi = δs(sxi)
-        # println("Perturbation Matrix: $(δXi)")
-        # println("δsxi.μ: $(δsxi.μ) -- δsxi.∇μ: $(δsxi.∇μ) -- δsxi.kx: $(δsxi.kx) -- δsxi.∇kx: $(δsxi.∇kx) -- δsxi.∇EI: $(δsxi.∇EI) -- δsxi.EI: $(δsxi.EI)")
-        P[:, column_ndx] = δsxi.∇EI
-    end
-
-    return P
-end
-
-
 function rollout!(
     T::Trajectory,
     lbs::Vector{Float64},
     ubs::Vector{Float64};
     rnstream::Matrix{Float64},
-    xstarts::Matrix{Float64},
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64}
-    )
+    xstarts::Matrix{Float64})
     # Initial draw at predetermined location not chosen by policy
-    f0, ∇f0 = gp_draw(T.mfs, T.x0; stdnormal=(@view rnstream[:,1]))
+    f0 = gp_draw(T.fs, T.x0; stdnormal=rnstream[1,1])
 
-    # Update surrogate, perturbed surrogate, and multioutput surrogate
+    # Update surrogate and cache the gradient of the posterior mean field
     update_fsurrogate!(T.fs, T.x0, f0)
-    update_multioutput_fsurrogate!(T.mfs, T.x0, f0, ∇f0)
+    T.∇fs[:, 1] = T.fs(T.x0).∇μ
 
     # Preallocate for newton solves
     xnext = zeros(length(T.x0))
@@ -88,135 +39,102 @@ function rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= distributed_multistart_ei_solve(
-            T.fs, lbs, ubs, xstarts,
-            candidate_locations=candidate_locations, candidate_values=candidate_values
-        )
+        xnext .= multistart_ei_solve(T.fs, lbs, ubs, xstarts)
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=rnstream[:, j+1])
+        fi = gp_draw(T.fs, xnext; stdnormal=rnstream[1, j+1])
        
-        # Placeholder for jacobian matrix
-        δxi_jacobian::Matrix{Float64} = zeros(length(xnext), length(xnext))
-        # Intermediate matrices before summing placeholder
-        δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
-
-        total_observations = T.mfs.known_observed + T.mfs.fantasies_observed
-        for (j, jacobian) in enumerate(T.jacobians)
-            # Compute perturbation to each spatial location
-            P = compute_policy_perturbation(T, xnext, jacobian, total_observations, j)
-            push!(δxi_intermediates, P)
-        end
-
-        # Sum all perturbations
-        δxi_intermediates = reduce(+, δxi_intermediates)
-        # δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        if det(T.fs(xnext).HEI) < 1e-16
-            δxi_jacobian .= zeros(length(xnext), length(xnext))
-            # δxi_jacobian .= 0.
-        else
-            δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        end
-
-        # Update surrogate, perturbed surrogate, and multioutput surrogate
+        # Update surrogate and cache the gradient of the posterior mean field
         update_fsurrogate!(T.fs, xnext, fi)
-        update_multioutput_fsurrogate!(T.mfs, xnext, fi, ∇fi)
-
-        # Update jacobian matrix
-        push!(T.jacobians, δxi_jacobian)
-
+        T.∇fs[:, j+1] = T.fs(xnext).∇μ
+        
         if fi < T.fmin
             T.fmin = fi
         end
     end
-
-    return nothing
 end
 
+function function_sampler_constructor(t::TestFunction)
+    return function deterministic(x::Vector{Float64})
+        return t(x)
+    end
+end
 
-function rollout_no_crn!(
-    T::Trajectory,
+function gp_sampler_constructor(fs::SmartFantasyRBFsurrogate, stdnormals::AbstractVector, max_fantasy_index)
+    max_invocations = length(stdnormals)
+    fantasy_step = 0
+    
+    return function gp_sampler(x::Vector{Float64})
+        @assert fantasy_step < max_invocations "Maximum invocations have been used"
+        fsx = fs(x, fantasy_index=fantasy_step-1)
+        fantasy_step += 1
+        observation = fsx.μ + fsx.σ*stdnormals[fantasy_step]
+
+        return observation
+    end
+end
+
+function adjoint_rollout!(
+    T::AdjointTrajectory,
     lbs::Vector{Float64},
     ubs::Vector{Float64};
-    xstarts::Matrix{Float64},
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64}
-    )
+    get_observation::Function,
+    xstarts::Matrix{Float64})
     # Initial draw at predetermined location not chosen by policy
-    dd = length(T.x0)
-    f0, ∇f0 = gp_draw(T.mfs, T.x0; stdnormal=randn(dd + 1))
+    f0::Number = get_observation(T.x0)
 
-    # Update surrogate, perturbed surrogate, and multioutput surrogate
-    update_fsurrogate!(T.fs, T.x0, f0)
-    update_multioutput_fsurrogate!(T.mfs, T.x0, f0, ∇f0)
+    # Update surrogate and cache the gradient of the posterior mean field
+    update_sfsurrogate!(T.fs, T.x0, f0)
 
     # Preallocate for newton solves
-    xnext = zeros(dd)
+    xnext = zeros(length(T.x0))
 
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= distributed_multistart_ei_solve(
-            T.fs, lbs, ubs, xstarts,
-            candidate_locations=candidate_locations, candidate_values=candidate_values
-        )
+        xnext .= multistart_ei_solve(T.fs, lbs, ubs, xstarts, fantasy_index=j-1)
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=randn(dd + 1))
+        fi::Number = get_observation(xnext)
        
-        # Placeholder for jacobian matrix
-        δxi_jacobian::Matrix{Float64} = zeros(dd, dd)
-        # Intermediate matrices before summing placeholder
-        δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
-
-        total_observations = T.mfs.known_observed + T.mfs.fantasies_observed
-        for (j, jacobian) in enumerate(T.jacobians)
-            # Compute perturbation to each spatial location
-            P = compute_policy_perturbation(T, xnext, jacobian, total_observations, j)
-            push!(δxi_intermediates, P)
-        end
-
-        # Sum all perturbations
-        δxi_intermediates = reduce(+, δxi_intermediates)
-        # δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        if det(T.fs(xnext).HEI) < 1e-16
-            δxi_jacobian .= zeros(dd, dd)
-            # δxi_jacobian .= 0.
-        else
-            δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        end
-
-        # Update surrogate, perturbed surrogate, and multioutput surrogate
-        update_fsurrogate!(T.fs, xnext, fi)
-        update_multioutput_fsurrogate!(T.mfs, xnext, fi, ∇fi)
-
-        # Update jacobian matrix
-        push!(T.jacobians, δxi_jacobian)
-
-        if fi < T.fmin
-            T.fmin = fi
-        end
+        # Update surrogate and cache the gradient of the posterior mean field
+        update_sfsurrogate!(T.fs, xnext, fi)
     end
+end
 
-    return nothing
+
+function get_minimum_index(T)
+    N = length(T.s.y)
+    return minimum(T.fs.y[N+1:end])
 end
 
 
 function sample(T::Trajectory)
     @assert T.fs.fantasies_observed == T.h + 1 "Cannot sample from a trajectory that has not been rolled out"
     fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
-    M = T.fs.known_observed
+    ∇f_offset = T.fs.known_observed
     return [
         (
-            x=T.mfs.X[:,i],
-            y=T.mfs.y[i],
-            ∇y=T.mfs.∇y[:,i-M],
+            x=T.fs.X[:,i],
+            y=T.fs.y[i],
+            ∇f=T.∇fs[:, i - ∇f_offset]
+        ) for i in fantasy_slice
+    ]
+end
+
+function sample(T::AdjointTrajectory)
+    @assert T.fs.fantasies_observed == T.h + 1 "Cannot sample from a trajectory that has not been rolled out"
+    fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
+    return [
+        (
+            x=T.fs.X[:, i],
+            y=T.fs.y[i]
         ) for i in fantasy_slice
     ]
 end
 
 
-function best(T::Trajectory)
+function best(T::Union{Trajectory, AdjointTrajectory})
     # Filter function to remove elements which have close x-values to their preceding element
     function find_min_index(path; epsilon=.01)
         # Initial values set to the first tuple in the path
@@ -246,28 +164,29 @@ end
 
 function α(T::Trajectory)
     path = sample(T)
-    fmini = minimum(get_observations(T.s))
+    fmini = minimum(T.s.y)
     best_ndx, best_step = best(T)
     fb = best_step.y
     return max(fmini - fb, 0.)
 end
 
-
-function ∇α(T::Trajectory)
-    fmini = minimum(get_observations(T.s))
+function resolve(T::AdjointTrajectory)
+    path = sample(T)
+    fmini = minimum(T.s.y)
     best_ndx, best_step = best(T)
-    xb, fb, ∇fb = best_step
+    fb = best_step.y
+    return max(fmini - fb, 0.)
+end
 
-    if fmini <= fb
-        return zeros(length(xb))
-    end
+function get_fantasy_observations(T::AdjointTrajectory)
+    N = T.fs.known_observed
+    return T.fs.y[N+1:end]
+end
 
-    if best_ndx == 1
-        return -∇fb
-    end
-    
-    opt_jacobian = T.jacobians[best_ndx]
-    return transpose(-∇fb'*opt_jacobian)
+function gradient(T::AdjointTrajectory)
+    @assert T.fs.fantasies_observed == T.h + 1 "Rollout the trajectory before differentiating"
+    _, max_fantasy_index = findmin(get_fantasy_observations(T))
+    vbar = solve_adjoint_system(T, max_fantasy_index)
 end
 
 
@@ -275,299 +194,74 @@ function simulate_trajectory(
     s::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64};
-    variance_reduction::Bool = false,
-    buffer_size::Int = 100,
-    use_crn::Bool = true,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64})
+    αxs::Vector{Float64})
     deepcopy_s = Base.deepcopy(s)
 
-    if variance_reduction
-        # We'll sample more to learn a good approximation of the optimal coefficient
-        # for the variance reduction strategy
-        αxs, ∇αxs = zeros(tp.mc_iters + buffer_size), zeros(length(tp.x0), tp.mc_iters + buffer_size)
-        ei_cv = s(tp.x0).EI
-        ei_mc = zeros(tp.mc_iters + buffer_size)
-        ymin = minimum(get_observations(s))
-
-        for sample_ndx in 1:tp.mc_iters + buffer_size
-            # Rollout trajectory
-            T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
-    
-            if use_crn
-                rollout!(T, tp.lbs, tp.ubs;
-                    rnstream=tp.rnstream_sequence[sample_ndx, :, :],
-                    xstarts=xstarts,
-                    candidate_locations=candidate_locations,
-                    candidate_values=candidate_values
-                )
-            else
-                rollout_no_crn!(T, tp.lbs, tp.ubs;
-                    xstarts=xstarts,
-                    candidate_locations=candidate_locations,
-                    candidate_values=candidate_values
-                )
-            end
-    
-            ei_mc[sample_ndx] = max(ymin - first(sample(T)).y, 0.) - ei_cv
-            # Evaluate rolled out trajectory
-            αxs[sample_ndx] = α(T)
-            ∇αxs[:, sample_ndx] .= ∇α(T)
-        end
-
-        # Optimal coefficientf for control variate
-        c = -cov(αxs[1:buffer_size], ei_mc[1:buffer_size]) / var(ei_mc[1:buffer_size])
-        ∇μx = mean(∇αxs[:, buffer_size + 1:end], dims=2)
-        std_∇μx = std(∇αxs[:, buffer_size + 1:end], mean=∇μx, dims=2)
-        
-        # Variance reduced random variable
-        μx_ei_mc = αxs[buffer_size + 1:end] + c .* ei_mc[buffer_size + 1:end]
-        μx_varred = mean(αxs[buffer_size + 1:end]) + c .* mean(ei_mc[buffer_size + 1:end])
-        std_μx = std(μx_ei_mc, mean=μx_varred)
-        return (μx_varred, ∇μx, std_μx, std_∇μx, c)
-    else
-        αxs, ∇αxs = zeros(tp.mc_iters), zeros(length(tp.x0), tp.mc_iters)
-        for sample_ndx in 1:tp.mc_iters
-            # Rollout trajectory
-            T = Trajectory(deepcopy_s, copy(tp.x0), tp.h)
-    
-            if use_crn
-                rollout!(T, tp.lbs, tp.ubs;
-                    rnstream=tp.rnstream_sequence[sample_ndx, :, :],
-                    xstarts=xstarts,
-                    candidate_locations=candidate_locations,
-                    candidate_values=candidate_values
-                )
-            else
-                rollout_no_crn!(T, tp.lbs, tp.ubs;
-                    xstarts=xstarts,
-                    candidate_locations=candidate_locations,
-                    candidate_values=candidate_values
-                )
-            end
-    
-            # Evaluate rolled out trajectory
-            αxs[sample_ndx] = α(T)
-            ∇αxs[:, sample_ndx] .= ∇α(T)
-        end
-
-        # Average across trajectories
-        μx = mean(αxs)
-        ∇μx = mean(∇αxs, dims=2)
-        std_μx = std(αxs, mean=μx)
-        std_∇μx = std(∇αxs, mean=∇μx, dims=2)
-
-        return (μx, ∇μx, std_μx, std_∇μx)
-    end
-end
-
-
-function distributed_simulate_trajectory(
-    s::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64};
-    variance_reduction::Bool=false,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64},
-    αxs::SharedArray{Float64},
-    ∇αxs::SharedMatrix{Float64}
-    )
-    deepcopy_s = Base.deepcopy(s)
-
-    @sync @distributed for sample_ndx in 1:tp.mc_iters
+    for sample_ndx in 1:tp.mc_iters
         # Rollout trajectory
         T = Trajectory(deepcopy_s, tp.x0, tp.h)
         rollout!(T, tp.lbs, tp.ubs;
             rnstream=tp.rnstream_sequence[sample_ndx, :, :],
-            xstarts=xstarts,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values
-        )
-        
+            xstarts=xstarts)
+
         # Evaluate rolled out trajectory
         αxs[sample_ndx] = α(T)
-        ∇αxs[:, sample_ndx] .= ∇α(T)
     end
 
-    # Average trajectories
-    μx::Float64 = sum(αxs) / tp.mc_iters
-    ∇μx::Vector{Float64} = vec(sum(∇αxs, dims=2) / tp.mc_iters)
-    stderr_μx = sqrt(sum((αxs .- μx) .^ 2) / (tp.mc_iters - 1))
-    stderr_∇μx = sqrt(sum((∇αxs .- ∇μx) .^ 2) / (tp.mc_iters - 1))
+    # Average across trajectories
+    μx = mean(αxs)
+    std_μx = std(αxs, mean=μx)
 
-    if variance_reduction
-        sx = s(tp.x0)
-        μx += sx.EI
-        ∇μx .+= sx.∇EI
-    end
-
-    return μx, ∇μx, stderr_μx, stderr_∇μx
+    return μx, std_μx
 end
 
-
-function stochastic_rollout_solver(;
-    sur::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64},
-    batch::Matrix{Float64},
-    max_iterations::Int = 25,
-    varred::Bool = true,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64}
-    )
-    batch_results = Array{Any, 1}(undef, size(batch, 2))
-
-    for i in 1:size(batch, 2)
-        # Update start of trajectory for each point in the batch
-        tp.x0 .= batch[:, i]
-
-        # Perform stochastic gradient ascent on the point in the batch
-        batch_results[i] = stochastic_gradient_ascent_adam2(
-            sur=sur,
-            tp=tp,
-            max_sgd_iters=max_iterations,
-            varred=varred,
-            xstarts=xstarts,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values
-        )
-        println("Iterations: $(batch_results[i].iters)")
-    end
-
-    # Find the point in the batch that maximizes the rollout acquisition function
-    best_tuple = first(batch_results)
-    for result in batch_results[2:end]
-        if result.final_obj > best_tuple.final_obj
-            best_tuple = result
-        end
-    end
-
-    return best_tuple.finish, best_tuple.final_obj
-end
-
-function distributed_stochastic_rollout_solver(;
-    sur::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64},
-    batch::Matrix{Float64},
-    max_iterations::Int = 100,
-    varred::Bool = true,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64},
-    αxs::SharedArray{Float64},
-    ∇αxs::SharedMatrix{Float64},
-    final_locations::SharedMatrix{Float64},
-    final_evaluations::SharedArray{Float64}
-    )
-    for i in 1:size(batch, 2)
-        # Update start of trajectory for each point in the batch
-        tp.x0 = batch[:, i]
-
-        # Perform stochastic gradient ascent on the point in the batch
-        result = stochastic_gradient_ascent_adam(
-            sur=sur,
-            tp=tp,
-            max_sgd_iters=max_iterations,
-            varred=varred,
-            xstarts=xstarts,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values,
-            αxs=αxs,
-            ∇αxs=∇αxs
-        )
-        final_locations[:, i] = result.finish
-        final_evaluations[i] = result.final_obj
-    end
-
-    # Find the point in the batch that maximizes the rollout acquisition function
-    best_ndx, best_evaluation, best_location = 1, first(final_evaluations), final_locations[:, 1]
-    for i in 1:size(batch, 2)
-        if final_evaluations[i] > best_evaluation
-            best_ndx = i
-            best_evaluation = final_evaluations[i]
-            best_location = final_locations[:, i]
-        end
-    end
-
-    return (best_location, best_evaluation)
-end
-
-
-function SAA_constructor(
-    sur::RBFsurrogate,
+function deterministic_simulate_trajectory(
+    s::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64};
-    variance_reduction::Bool=false,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64}
-    )
-    function rollout(x)
-        tp.x0[:] = x
-        μx, ∇μx, _, _ = simulate_trajectory(sur, tp, xstarts,
-            variance_reduction=variance_reduction,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values
+    testfn::TestFunction,
+    resolutions::AbstractVector)
+    deepcopy_s = Base.deepcopy(s)
+
+    for sample_index in 1:tp.mc_iters
+        # Rollout trajectory
+        T = AdjointTrajectory(deepcopy_s, tp.x0, tp.h)
+        sampler = function_sampler_constructor(testfn)
+        adjoint_rollout!(T, tp.lbs, tp.ubs;
+            get_observation=sampler,
+            xstarts=xstarts,
         )
 
-        return -μx
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
     end
 
-    function grollout!(g, x)
-        tp.x0[:] = x
-        μx, ∇μx, _, _ = simulate_trajectory(sur, tp, xstarts,
-            variance_reduction=variance_reduction,
-            candidate_locations=candidate_locations,
-            candidate_values=candidate_values
-        )
-        g[:] = -∇μx
-    end
-
-    return (rollout, grollout!)
+    return  mean(resolutions)
 end
 
-
-function rollout_solver_saa(;
-    sur::RBFsurrogate,
+function simulate_trajectory(
+    s::RBFsurrogate,
     tp::TrajectoryParameters,
-    xstarts::Matrix{Float64},
-    batch::Matrix{Float64},
-    max_iterations::Int = 100,
-    varred::Bool = true,
-    candidate_locations::SharedMatrix{Float64},
-    candidate_values::SharedArray{Float64},
-    αxs::SharedArray{Float64},
-    ∇αxs::SharedMatrix{Float64},
-    final_locations::SharedMatrix{Float64},
-    final_evaluations::SharedArray{Float64}
-    )
-    rollout_estimator, grollout_estimator! = SAA_constructor(
-        sur, tp, xstarts, variance_reduction=varred,
-        candidate_locations=candidate_locations,
-        candidate_values=candidate_values
-    )
+    xstarts::Matrix{Float64};
+    resolutions::AbstractVector)
+    deepcopy_s = Base.deepcopy(s)
 
-    for i in 1:size(batch, 2)
-        # Update start of trajectory for each point in the batch
-        tp.x0 = batch[:, i]
-
-        # Perform stochastic gradient ascent on the point in the batch
-        result = Optim.optimize(
-            rollout_estimator, grollout_estimator!, tp.lbs, tp.ubs, batch[:, i], IPNewton(),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3)    
+    for sample_index in 1:tp.mc_iters
+        # Rollout trajectory
+        T = AdjointTrajectory(deepcopy_s, tp.x0, tp.h)
+        sampler = gp_sampler_constructor(
+            T.fs, vec(tp.rnstream_sequence[sample_index, :, :]), tp.h
         )
-        final_locations[:, i] = Optim.minimizer(result)
-        final_evaluations[i] = Optim.minimum(result)
+        adjoint_rollout!(T, tp.lbs, tp.ubs;
+            get_observation=sampler,
+            xstarts=xstarts,
+        )
+
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
     end
 
-    # Find the point in the batch that maximizes the rollout acquisition function
-    best_ndx, best_evaluation, best_location = 1, first(final_evaluations), final_locations[:, 1]
-    for i in 1:size(batch, 2)
-        if final_evaluations[i] > best_evaluation
-            best_ndx = i
-            best_evaluation = final_evaluations[i]
-            best_location = final_locations[:, i]
-        end
-    end
-
-    return (best_location, best_evaluation)
+    μ = mean(resolutions)
+    σ = std(resolutions, mean=μ)
+    return  μ, σ
 end

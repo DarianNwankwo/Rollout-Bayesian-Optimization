@@ -1,0 +1,174 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb}
+
+\newcommand{\bfx}{\mathbf{x}}
+\newcommand{\bfr}{\mathbf{r}}
+
+\title{Adjoint mode and rollout response}
+\author{Darian Nwankwo}
+
+\begin{document}
+\maketitle
+
+\section{Thoughts}
+Of the computations required to solve for $\bar{v}$, we have a handle on everything except (I believe) for
+differentiating with respect to function values and locations independently. As it currently stands, when we
+compute perturbations of the policy solve, it is doing so with respect to $(x_k, y_k, f^+_k)$ simultaneously and returning
+the sum, i.e.
+\[
+  H_{\alpha} \delta x^{k+1} + 
+  \sum_{j=1}^k \left(
+    \frac{\partial \nabla \alpha}{\partial x^j} \delta x^j +
+    \frac{\partial \nabla \alpha}{\partial y_j} \delta y_j
+  \right) +
+  \frac{\partial \nabla \alpha}{\partial f^{+k}} \delta f^{+k} = 0.
+\]
+
+Therefore, the problem becomes disambiguating our existing computations such that we have a handle on each term in
+this sum instead of returning the resulting sum. I'm convinced of the logic thereafter, now it is a matter of ensuring the
+code computes each respective component as we see fit.
+
+\subsection{Request}
+Let's pair program to disambiguate our sum such that we have a handle on each result operand.
+
+\section{Original Discourse}
+Consider a rollout trajectory to time step $t$.  We are interested in
+computing the derivative of the function value $y_t$ at time $t$ 
+respect to the initial condition $\bfx_0$.
+
+The basic setup for the forward computation is
+\begin{align*}
+  \bfr_j(\bfx_j; \bfx_0, y_0, \ldots, \bfx_{j-1}, y_{j-1}) &= 0 \\
+  f(\bfx_j) - y_j &= 0.
+\end{align*}
+Here $\bfr_j$ should be thought of as the gradient of the acquisition
+function at step $j$ (i.e. we seek to maximize the acquisition
+function at each step).  I will not write out all the details of this
+calculation here, as we have it elsewhere.
+
+We can write the usual ``forward mode'' computation of the derivatives
+by differentiating each equation in term and then doing forward
+substitution.
+\[
+\begin{bmatrix}
+  f'(\bfx_0) & -1 \\
+  \frac{\partial \bfr_1}{\partial \bfx_0} &
+  \frac{\partial \bfr_1}{\partial y_0} &
+  \frac{\partial \bfr_1}{\partial \bfx_1} \\
+    &   & f'(\bfx_1) & -1 \\
+  \frac{\partial \bfr_2}{\partial \bfx_0} &
+  \frac{\partial \bfr_2}{\partial y_0} &
+  \frac{\partial \bfr_2}{\partial \bfx_1} &
+  \frac{\partial \bfr_2}{\partial y_1} &
+  \frac{\partial \bfr_2}{\partial \bfx_2} \\
+  &   &   &   & f'(\bfx_2) & -1 \\
+  \vdots & & & & & & \ddots \\
+  \frac{\partial \bfr_t}{\partial \bfx_0} &
+  \frac{\partial \bfr_t}{\partial y_0} &
+  \frac{\partial \bfr_t}{\partial \bfx_1} &
+  \frac{\partial \bfr_t}{\partial y_1} &
+  \frac{\partial \bfr_t}{\partial \bfx_2} &
+  \cdots &
+  \frac{\partial \bfr_t}{\partial \bfx_{t-1}} &
+  \frac{\partial \bfr_t}{\partial \bfx_t} \\
+  &   &   &   & & & & f'(\bfx_t) & -1 
+\end{bmatrix}
+\begin{bmatrix}
+  \delta \bfx_0 \\ \delta y_0 \\
+  \delta \bfx_1 \\ \delta y_1 \\
+  \delta \bfx_2 \\ \delta y_2 \\
+  \vdots \\
+  \delta \bfx_t \\ \delta y_t
+\end{bmatrix} = 0.
+\]
+
+We are interested in sensitivity with respect to $\delta \bfx_0$, so
+we rewrite this as
+\[
+\begin{bmatrix}
+  -1 \\
+  \frac{\partial \bfr_1}{\partial y_0} &
+  \frac{\partial \bfr_1}{\partial \bfx_1} \\
+    & f'(\bfx_1) & -1 \\
+  \frac{\partial \bfr_2}{\partial y_0} &
+  \frac{\partial \bfr_2}{\partial \bfx_1} &
+  \frac{\partial \bfr_2}{\partial y_1} &
+  \frac{\partial \bfr_2}{\partial \bfx_2} \\
+   &   &   & f'(\bfx_2) & -1 \\
+  \vdots & & & & & \ddots \\
+  \frac{\partial \bfr_t}{\partial y_0} &
+  \frac{\partial \bfr_t}{\partial \bfx_1} &
+  \frac{\partial \bfr_t}{\partial y_1} &
+  \frac{\partial \bfr_t}{\partial \bfx_2} &
+  \cdots &
+  \frac{\partial \bfr_t}{\partial \bfx_{t-1}} &
+  \frac{\partial \bfr_t}{\partial \bfx_t} \\
+   &   &   & & & & f'(\bfx_t) & -1 
+\end{bmatrix}
+\begin{bmatrix}
+  \delta y_0 \\
+  \delta \bfx_1 \\ \delta y_1 \\
+  \delta \bfx_2 \\ \delta y_2 \\
+  \vdots \\
+  \delta \bfx_t \\ \delta y_t
+\end{bmatrix} = 
+-\begin{bmatrix}
+  f'(\bfx_0) \\
+  \frac{\partial \bfr_1}{\partial \bfx_0} \\
+  0 \\ 
+  \frac{\partial \bfr_2}{\partial \bfx_0} \\
+  0 \\
+  \vdots \\
+  \frac{\partial \bfr_t}{\partial \bfx_0} \\
+  0
+\end{bmatrix} \delta \bfx_0.
+\]
+
+We can write this more concisely as
+\[
+  L v = -g \, \delta \bfx_0,
+\]
+where $L$ is a (block) lower triangular matrix, $v$ is the vector of
+variations, and $-g \, \delta \bfx_0$ is the right hand side.
+We are interested in $\delta y_t = e_m^T v$, where $e_m$ is the last
+column of the identity matrix.  The usual forward mode differentiation
+corresponds to solving
+\[
+  \delta y_t = -e_m^T (L^{-1} g) \delta \bfx_0;
+\]
+backward mode corresponds to solving
+\[
+  \delta y = (-e_m^T L^{-1}) g \delta \bfx_0
+\]
+We can also write this as $\delta y = \bar{v}^T g\delta \bfx_0$, where
+\[
+  L^T \bar{v} = -e_m
+\]
+
+Backsubstitution for this system starts with $\bar{y}_t = 1$ and
+then computes
+\begin{align*}
+  \left( \frac{\partial \bfr_j}{\partial \bfx_j} \right)^T \bar{\bfx}_j
+  &= -\nabla f(\bfx_t) \bar{y}_t - \sum_{i=j+1}^t
+      \left( \frac{\partial \bfr_i}{\partial \bfx_j} \right)^T
+      \bar{\bfx}_i \\
+  \bar{y}_j &= \sum_{i=j+1}^t \left( \frac{\partial \bfr_i}{\partial y_j}
+  \right)^T \bar{\bfx}_i
+\end{align*}
+for $j$ running backward down to zero.  Once we have computed this,
+we get
+\[
+g^T \bar{v} = \nabla f(\bfx_0) \bar{y}_0 +
+\sum_{j=1}^t
+\left( \frac{\partial \bfr_j}{\partial \bfx_0} \right)^T \bar{\bfx}_j
+\]
+This is the gradient of $y_t$ with respect to changes in the $\bfx_0$,
+which is what we wanted to compute.
+
+Note that the final gradient depends {\em linearly} on the function
+gradients $\nabla f(\bfx_j)$.  Therefore, we can trivially compute the
+expectation -- just replace the random variables $\nabla f(\bfx_j)$
+in the expressions above with their expectations!
+
+
+\end{document}

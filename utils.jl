@@ -434,3 +434,11 @@ function generate_initial_guesses(N::Int, lbs::Vector{T}, ubs::Vector{T},) where
 
     return initial_guesses
 end
+
+
+function to(n; key="KB")
+    mapping = Dict("KB" => 1, "MB" => 2, "GB" => 3)
+    factor = mapping[key]
+    conversion = n / (1024 ^ mapping[key])
+    return "$(conversion)$(key)"
+end

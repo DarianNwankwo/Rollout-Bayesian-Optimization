@@ -247,7 +247,8 @@ Given a radial basis function and a matrix of observations, evaluate the
 covariance vector between obersations and a test point.
 """
 
-function eval_KxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64})
+# function eval_KxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64})
+function eval_KxX(rbf::RBFfun, x::Vector{Float64}, X::AbstractMatrix)
     d, N = size(X)
     KxX = zeros(N)
     
@@ -365,8 +366,8 @@ Given a radial basis function, an arbitrary point, and a matrix of observations,
 evaluate the gradient of the covariance vector between the point and the
 observations.
 """
-# TODO: If the sign of r is negative, our covariance measure is wrong by a factor of -1.
-function eval_∇KxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64})
+# function eval_∇KxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64})
+function eval_∇KxX(rbf::RBFfun, x::Vector{Float64}, X::AbstractMatrix)
     d, N = size(X)
     ∇KxX = zeros(d, N)
     
@@ -488,7 +489,8 @@ function eval_δKxX(rbf::RBFfun, x::Vector{Float64}, X::Matrix{Float64},
     δKxX = zeros(N)
 
     for j = 1:N
-        δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (δX[:,j])
+        # δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (δX[:,j])
+        δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (-δX[:,j])
     end
 
     return δKxX

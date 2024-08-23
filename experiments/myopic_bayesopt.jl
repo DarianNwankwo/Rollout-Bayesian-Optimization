@@ -233,7 +233,7 @@ end
 
 
 function poi_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=100)
-    fbest = minimum(get_observations(s))
+    fbest = minimum(s.y)
 
     function poi(x)
         sx = s(x)
@@ -261,7 +261,7 @@ end
 
 
 function ei_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=100)
-    fbest = minimum(get_observations(s))
+    fbest = minimum(s.y)
 
     function ei(x)
         sx = s(x)
@@ -307,7 +307,7 @@ end
 
 
 function ucb_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, β=3., max_iterations=100)
-    fbest = minimum(get_observations(s))
+    fbest = minimum(s.y)
 
     function ucb(x)
         sx = s(x)
@@ -703,7 +703,7 @@ function main()
             # Compute the GAP of the surrogate model
             fbest = testfn.f(testfn.xopt[1])
             for i in strategy_indices
-                all_gaps[i] .= measure_gap(get_observations(all_surs[i]), fbest)
+                all_gaps[i] .= measure_gap(all_surs[i].y, fbest)
             end
 
             # Write the time, GAP, and observations to disk
@@ -711,7 +711,7 @@ function main()
                 write_time_to_csv(all_times[i], trial, all_time_file_paths[i])
                 write_gap_to_csv(all_gaps[i], trial, all_csv_file_paths[i])
                 write_observations_to_csv(
-                    all_surs[i].X, get_observations(all_surs[i]), trial, all_observation_csv_file_paths[i]
+                    all_surs[i].X, all_surs[i].y, trial, all_observation_csv_file_paths[i]
                 )
             end
         catch failure_error
