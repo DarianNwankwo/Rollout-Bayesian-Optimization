@@ -9,7 +9,6 @@ struct TestFunction
     ∇f
 end
 
-
 (testfn::TestFunction)(x::Vector{Float64}) = testfn.f(x)
 gradient(testfn::TestFunction) = testfn.∇f
 function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
@@ -20,7 +19,7 @@ function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
 end
 
 
-function apply_scale(testfn::TestFunction, s::Number)
+function scale(testfn::TestFunction, s::Number)
     function f(x)
         return testfn.f(x/s)
     end
@@ -31,7 +30,7 @@ function apply_scale(testfn::TestFunction, s::Number)
 end
 
 
-function apply_shift(testfn::TestFunction, s::Number)
+function vshift(testfn::TestFunction, s::Number)
     function f(x)
         return testfn.f(x) + s
     end
@@ -40,6 +39,18 @@ function apply_shift(testfn::TestFunction, s::Number)
     end
     return TestFunction(testfn.dim, testfn.bounds, testfn.xopt, f, ∇f)
 end
+
+function hshift(testfn::TestFunction, s::AbstractVector)
+    function f(x)
+        return testfn.f(x + s)
+    end
+    function ∇f(x)
+        return testfn.∇f(x)
+    end
+    return TestFunction(testfn.dim, testfn.bounds, testfn.xopt + s , f, ∇f)
+end
+
+get_bounds(t::TestFunction) = (t.bounds[:, 1], t.bounds[:, 2])
 
 
 function tplot(f :: TestFunction)

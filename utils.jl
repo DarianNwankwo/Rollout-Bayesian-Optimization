@@ -44,6 +44,8 @@ function box_muller_transform(S)
     N
 end
 
+dense_1D_discretization(;lb, ub, stepsize) = lb:stepsize:ub
+
 """
 Produces a sequence of standard normally distributed values in 1D
 """
@@ -258,7 +260,7 @@ function stochastic_gradient_ascent_adam1(;
         iters = epoch
 
         # Compute stochastic estimates of function and gradient
-        μx, ∇μx, μx_stderr, ∇μx_stderr = simulate_trajectory(
+        μx, ∇μx, μx_stderr, ∇μx_stderr = simulate_forward_trajectory(
             sur, tp, xstarts; variance_reduction=varred,
             candidate_locations=candidate_locations, candidate_values=candidate_values
         )
@@ -322,7 +324,7 @@ function stochastic_gradient_ascent_adam2(;
         iters = epoch
 
         # Compute stochastic estimates of function and gradient
-        μx, ∇μx, μx_std, ∇μx_std = simulate_trajectory(
+        μx, ∇μx, μx_std, ∇μx_std = simulate_forward_trajectory(
             sur, tp, xstarts; variance_reduction=varred,
             candidate_locations=candidate_locations, candidate_values=candidate_values
         )

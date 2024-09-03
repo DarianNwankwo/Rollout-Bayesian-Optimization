@@ -671,7 +671,21 @@ function eval(δs::SpatialPerturbationSurrogate, sx; δx::Vector{Float64}, curre
     δsx.∇μ = () -> δsx.∇kx*fs.cs[δs.max_fantasized_step + TOTAL_OFFSET] + sx.∇kx*δsx.c
 
     δsx.σ = () -> (-2*δsx.kx'*sx.w + sx.w'*(δsx.K*sx.w)) / (2*sx.σ)
-    δsx.∇σ = () -> (sx.∇w*(δsx.K*sx.w) - δsx.∇kx*sx.w - sx.∇w*δsx.kx - δsx.σ*sx.∇σ) / sx.σ
+    # δsx.∇σ = () -> (sx.∇w*(δsx.K*sx.w) - δsx.∇kx*sx.w - sx.∇w*δsx.kx - δsx.σ*sx.∇σ) / sx.σ
+    δsx.∇σ = function()
+        a0 = 0.
+        try
+            a0 = δsx.K*sx.w
+        catch e
+            println("δsx.K=$(δsx.K) -- w=$(sx.w)")
+        end
+        a1 = sx.∇w * a0
+        a2 = δsx.∇kx*sx.w
+        a3 = sx.∇w*δsx.kx
+        a4 = δsx.σ*sx.∇σ
+        a5 = sx.σ
+        return (a1 - a2 - a3 - a4) / a5
+    end
 
     δsx.z = () -> (-δsx.μ - δsx.σ*sx.z) / sx.σ
     δsx.∇z = () -> (δsx.∇μ - sx.∇σ*δsx.z - δsx.∇σ*sx.z - δsx.σ*sx.∇z) / sx.σ
@@ -920,24 +934,6 @@ function fit_multioutput_fsurrogate(s::RBFsurrogate, h::Int64)
     )
 end
 
-function reset_mfsurrogate!(mfs::MultiOutputFantasyRBFsurrogate, s::RBFsurrogate)
-    d, N = size(s.X)
-    # Reset preallocated fantasized locations
-    mfs.X[:, 1:N] = @view s.X[:,:]
-    mfs.X[:, N+1:end] .= 0
-
-    # K and L can stay the same, we just need to update the index
-    mfs.known_observed = N
-    mfs.fantasies_observed = 0
-
-    # Store known history observations separately from fantasized function and gradient values
-    mfs.y = copy(s.y)
-
-    # Initial solve of the linear system with only known observations
-    mfs.c = s.L' \ (s.L \ s.y)
-
-    return nothing
-end
 
 function update_multioutput_fsurrogate!(s::MultiOutputFantasyRBFsurrogate, xnew::Vector{Float64},
     ynew::Float64, ∇ynew::Vector{Float64})
@@ -1085,14 +1081,15 @@ end
 Given a multi-output GP surrogate and a point x, draw a sample from the
 posterior distribution of the function value and its gradient at x.
 """
-
-function get_observations(s::Union{RBFsurrogate, FantasyRBFsurrogate, MultiOutputFantasyRBFsurrogate})
+function get_observations(s::Surrogate)
     return s.y
 end
 
 function get_grad_observations(s::MultiOutputFantasyRBFsurrogate)
     return s.∇y
 end
+
+get_covariates(s::Surrogate) = s.X
 
 # ------------------------------------------------------------------
 # Operations for computing optimal hyperparameters.

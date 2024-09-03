@@ -25,7 +25,7 @@ Where j represents the jth column of all of our observations we want to compute 
 """
 function compute_policy_perturbation(
     # T::ForwardTrajectory,
-    T::Trajectory,
+    T::ForwardTrajectory,
     xnext::Vector{Float64},
     jacobian_matrix::Matrix{Float64},
     total_observations::Int,
@@ -62,9 +62,9 @@ end
 
 
 function rollout!(
-    T::Trajectory,
-    lbs::Vector{Float64},
-    ubs::Vector{Float64};
+    T::ForwardTrajectory;
+    lowerbounds::Vector{Float64},
+    upperbounds::Vector{Float64},
     rnstream::Matrix{Float64},
     xstarts::Matrix{Float64})
     # Initial draw at predetermined location not chosen by policy
@@ -80,7 +80,7 @@ function rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_ei_solve(T.fs, lbs, ubs, xstarts)
+        xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts)
 
         # Draw fantasized sample at proposed location after base acquisition solve
         fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=rnstream[:, j+1])
@@ -123,54 +123,14 @@ function rollout!(
 end
 
 
-function rollout2!(
-    T::Trajectory,
-    lbs::Vector{Float64},
-    ubs::Vector{Float64};
-    rnstream::Vector{Float64},
-    xstarts::Matrix{Float64})
-    # Initial draw at predetermined location not chosen by policy
-    f0 = gp_draw(T.fs, T.x0; stdnormal=rnstream[1])
-
-    # Update surrogate, perturbed surrogate, and multioutput surrogate
-    update_fsurrogate!(T.fs, T.x0, f0)
-
-    # Preallocate for newton solves
-    xnext = zeros(length(T.x0))
-
-    # Perform rollout for fantasized trajectories
-    for j in 1:T.h
-        # Solve base acquisition function to determine next sample location
-        xnext .= multistart_ei_solve(T.fs, lbs, ubs, xstarts)
-
-        # Draw fantasized sample at proposed location after base acquisition solve
-        fi = gp_draw(T.fs, xnext; stdnormal=rnstream[j+1])
-        # fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=rnstream[:, j+1])
-
-        # Update surrogate, perturbed surrogate, and multioutput surrogate
-        update_fsurrogate!(T.fs, xnext, fi)
-
-        if fi < T.fmin
-            T.fmin = fi
-        end
-    end
-
-    return nothing
-end
-
-
-
-
-
-
 function adjoint_rollout!(
-    T::AdjointTrajectory,
-    lbs::Vector{Float64},
-    ubs::Vector{Float64};
+    T::AdjointTrajectory;
+    lowerbounds::Vector{Float64},
+    upperbounds::Vector{Float64},
     get_observation::Observable,
     xstarts::Matrix{Float64})
     # Initial draw at predetermined location not chosen by policy
-    f0::Number = get_observation(T.x0)
+    f0 = get_observation(T.x0)
 
     # Update surrogate and cache the gradient of the posterior mean field
     update_sfsurrogate!(T.fs, T.x0, f0)
@@ -181,10 +141,10 @@ function adjoint_rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_ei_solve(T.fs, lbs, ubs, xstarts, fantasy_index=j-1)
+        xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts, fantasy_index=j-1)
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi::Number = get_observation(xnext)
+        fi = get_observation(xnext)
        
         # Update surrogate and cache the gradient of the posterior mean field
         update_sfsurrogate!(T.fs, xnext, fi)
@@ -199,7 +159,7 @@ function get_minimum_index(T)
 end
 
 
-function sample(T::Trajectory)
+function sample(T::ForwardTrajectory)
     @assert T.fs.fantasies_observed == T.h + 1 "Cannot sample from a trajectory that has not been rolled out"
     fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
     ∇f_offset = T.fs.known_observed
@@ -230,7 +190,7 @@ function sample(T::AdjointTrajectory)
 end
 
 
-function best(T::Union{Trajectory, AdjointTrajectory})
+function best(T::Union{ForwardTrajectory, AdjointTrajectory})
     # Filter function to remove elements which have close x-values to their preceding element
     function find_min_index(path; epsilon=.01)
         # Initial values set to the first tuple in the path
@@ -258,15 +218,15 @@ function best(T::Union{Trajectory, AdjointTrajectory})
 end
 
 
-function α(T::Trajectory)
+function resolve(T::Trajectory)
     path = sample(T)
-    fmini = minimum(T.s.y)
+    fmini = minimum(get_observations(get_base_surrogate(T)))
     best_ndx, best_step = best(T)
     fb = best_step.y
     return max(fmini - fb, 0.)
 end
 
-function ∇α(T::Trajectory)
+function gradient(T::ForwardTrajectory)
     fmini = minimum(get_observations(T.s))
     best_ndx, best_step = best(T)
     xb, fb, ∇fb = best_step
@@ -283,13 +243,13 @@ function ∇α(T::Trajectory)
     return transpose(-∇fb'*opt_jacobian)
 end
 
-function resolve(T::AdjointTrajectory)
-    path = sample(T)
-    fmini = minimum(T.s.y)
-    best_ndx, best_step = best(T)
-    fb = best_step.y
-    return max(fmini - fb, 0.)
-end
+# function resolve(T::AdjointTrajectory)
+#     path = sample(T)
+#     fmini = minimum(T.s.y)
+#     best_ndx, best_step = best(T)
+#     fb = best_step.y
+#     return max(fmini - fb, 0.)
+# end
 
 function get_fantasy_observations(T::AdjointTrajectory)
     N = T.fs.known_observed
@@ -358,7 +318,8 @@ function gather_g(T::AdjointTrajectory; optimal_index::Int64)
         # Preallocate policy perturbation
         drj_dx0 = zeros(size(I_d))
         # Fit the spatial perturbation surrogate wrt to x0 only
-        sp_sur = fit_spatial_perturbation_surrogate(T.fs, 0)
+        # sp_sur = fit_spatial_perturbation_surrogate(T.fs, 0)
+        sp_sur = fit_spatial_perturbation_surrogate(T.fs, policy_solve_step - 1)
         # Recover the `solve_index` policy and perturb wrt to x0
         sxj = recover_policy_solve(T, solve_index=policy_solve_step)
         for j in 1:dim
@@ -374,6 +335,9 @@ function gather_g(T::AdjointTrajectory; optimal_index::Int64)
     return g
 end
 
+function gather_q(T::AdjointTrajectory; optimal_index::Int64)
+end
+
 function gradient(T::AdjointTrajectory)
     fmini = minimum(T.s.y)
     best_ndx, best_step = best(T)
@@ -385,10 +349,8 @@ function gradient(T::AdjointTrajectory)
 
     t = get_minimum_index(T) - 1 # first sample isn't solved via an optimization routine
     if t == 0
-        sx = recover_policy_solve(T, solve_index=0)
-        # return T.s(T.x0).∇μ
-        # return sx.∇μ
-        return -T.observable.gradients[:, t+1]
+        # We should replace the sampled gradient below with the gradient of the mean field
+        return convert(Vector, -T.observable.gradients[:, t+1])
     end
     dim = length(T.x0)
     xbars = [zeros(dim) for _ in 1:t]
@@ -409,93 +371,124 @@ function gradient(T::AdjointTrajectory)
         grad += g[j+1]' * xbars[j]
     end
 
-    return -grad
+    return convert(Vector, -grad)
 end
 
 
-function simulate_trajectory(
+function simulate_forward_trajectory(
     s::RBFsurrogate,
     tp::TrajectoryParameters,
     xstarts::Matrix{Float64};
-    αxs::Vector{Float64},
-    ∇αxs::Matrix{Float64})
+    resolutions::Vector{Float64},
+    gradient_resolutions::Matrix{Float64})
     deepcopy_s = Base.deepcopy(s)
+    lowerbounds, upperbounds = get_bounds(tp)
 
-    for sample_ndx in 1:tp.mc_iters
+    for sample_ndx in each_trajectory(tp)
         # Rollout trajectory
-        T = Trajectory(deepcopy_s, tp.x0, tp.h)
-        rollout!(T, tp.lbs, tp.ubs;
-            rnstream=tp.rnstream_sequence[sample_ndx, :, :],
-            xstarts=xstarts)
+        T = ForwardTrajectory(base_surrogate=deepcopy_s, start=starting_point(tp), horizon=tp.h)
+        rollout!(
+            T,
+            lowerbounds=lowerbounds,
+            upperbounds=upperbounds,
+            rnstream=get_samples_rnstream(tp, sample_index=sample_index),
+            xstarts=xstarts
+        )
 
         # Evaluate rolled out trajectory
-        αxs[sample_ndx] = α(T)
-        ∇αxs[:, sample_ndx] = ∇α(T)
+        resolutions[sample_ndx] = resolve(T)
+        gradient_resolutions[:, sample_ndx] = gradient(T)
     end
 
     # Average across trajectories
-    μx = mean(αxs)
-    ∇μx = mean(∇αxs, dims=2)
-    std_μx = std(αxs, mean=μx)
+    μx = mean(resolutions)
+    ∇μx = mean(gradient_resolutions, dims=2)
+    std_μx = std(resolutions, mean=μx)
 
     return μx, std_μx, ∇μx
 end
 
 function deterministic_simulate_trajectory(
     s::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64};
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::AbstractMatrix,
     testfn::TestFunction,
     resolutions::AbstractVector,
-    gradient_resolutions::AbstractMatrix)
+    gradient_resolutions::Union{Nothing, AbstractMatrix} = nothing)
     deepcopy_s = Base.deepcopy(s)
+    lowerbounds, upperbounds = get_bounds(tp)
 
-    for sample_index in 1:tp.mc_iters
+    for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = AdjointTrajectory(deepcopy_s, tp.x0, tp.h)
-        sampler = DeterministicObservable(testfn, tp.h + 1)
+        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=tp.x0, horizon=tp.h)
+        sampler = DeterministicObservable(testfn, max_invocations=tp.h + 1)
         attach_observable!(T, sampler)
-        adjoint_rollout!(T, tp.lbs, tp.ubs;
-            get_observation=T.observable,
-            xstarts=xstarts,
+        adjoint_rollout!(T,
+            lowerbounds=lowerbounds,
+            upperbounds=upperbounds,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts,
         )
 
         # Evaluate rolled out trajectory
         resolutions[sample_index] = resolve(T)
-        gradient_resolutions[:, sample_index] = gradient(T)
+        if !isnothing(gradient_resolutions)
+            gradient_resolutions[:, sample_index] = gradient(T)
+        end
     end
 
     μ = mean(resolutions)
-    σ = std(resolutions, mean=μ)
-    ∇μ = mean(gradient_resolutions, dims=2)
-    return  μ, σ, ∇μ
+    σ = 0.
+
+    if isnothing(gradient_resolutions)
+        return μ, σ
+    else
+        ∇μ = mean(gradient_resolutions, dims=2)
+        return  μ, σ, ∇μ
+    end
 end
 
 function simulate_adjoint_trajectory(
     s::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64};
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::AbstractMatrix,
     resolutions::AbstractVector,
-    gradient_resolutions::AbstractMatrix)
+    gradient_resolutions::Union{Nothing, AbstractMatrix} = nothing)
     deepcopy_s = Base.deepcopy(s)
+    lowerbounds, upperbounds = get_bounds(tp)
 
-    for sample_index in 1:tp.mc_iters
+    for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = AdjointTrajectory(deepcopy_s, tp.x0, tp.h)
-        sampler = StochasticObservable(T.fs, tp.rnstream_sequence[sample_index, :, :], tp.h + 1)
+        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=starting_point(T), horizon=tp.h)
+        sampler = StochasticObservable(
+            surrogate=T.fs, 
+            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
+            max_invocations=tp.h + 1
+        )
         attach_observable!(T, sampler)
-        adjoint_rollout!(T, tp.lbs, tp.ubs;
-            get_observation=T.observable,
-            xstarts=xstarts,
+
+        adjoint_rollout!(
+            T,
+            lowerbounds=lowerbounds,
+            upperbounds=upperbounds,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts
         )
 
         # Evaluate rolled out trajectory
         resolutions[sample_index] = resolve(T)
-        gradient_resolutions[:, sample_index] = gradient(T)
+        if !isnothing(gradient_resolutions)
+            gradient_resolutions[:, sample_index] = gradient(T)
+        end
     end
 
     μ = mean(resolutions)
     σ = std(resolutions, mean=μ)
-    ∇μ = mean(gradient_resolutions, dims=2)
-    return  μ, σ, ∇μ
+    
+    if isnothing(gradient_resolutions)
+        return μ, σ
+    else
+        ∇μ = mean(gradient_resolutions, dims=2)
+        return  μ, σ, ∇μ
+    end
 end
