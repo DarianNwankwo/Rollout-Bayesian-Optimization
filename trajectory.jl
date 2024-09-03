@@ -2,10 +2,69 @@ include("radial_basis_surrogates.jl")
 
 using SharedArrays
 
+abstract type Observable end
+
+mutable struct StochasticObservable <: Observable
+    fs::SmartFantasyRBFsurrogate
+    stdnormal::AbstractMatrix
+    trajectory_length::Int64
+    step::Int64
+    observations::Vector{Float64}
+    gradients::Matrix{Float64}
+
+    function StochasticObservable(fs, stdnormal, trajectory_length)
+        dim = size(stdnormal, 1) - 1
+        invocations = size(stdnormal, 2)
+        observations = zeros(invocations)
+        gradients = zeros(dim, invocations)
+        return new(fs, stdnormal, trajectory_length, 0, observations, gradients)
+    end
+end
+
+function (so::StochasticObservable)(x::AbstractVector)
+    @assert so.step < so.trajectory_length "Maximum invocations have been used"
+    observation, gradient_... = gp_draw(
+        so.fs, x, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
+    )
+    so.step += 1
+    so.observations[so.step] = observation
+    so.gradients[:, so.step] = gradient_
+
+    return observation
+end
+
+
+
+mutable struct DeterministicObservable <: Observable
+    testfn::TestFunction
+    trajectory_length::Int64
+    step::Int64
+    observations::Vector{Float64}
+    gradients::Matrix{Float64}
+
+    function DeterministicObservable(t::TestFunction, trajectory_length)
+        dim = testfn.dim
+        observations = zeros(trajectory_length)
+        gradients = zeros(dim, trajectory_length)
+        return new(t, trajectory_length, 0, observations, gradients)
+    end
+end
+
+function (deo::DeterministicObservable)(x::AbstractVector)
+    @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
+    observation, gradient_ = testfn(x), gradient(testfn)(x)
+    deo.step += 1
+    deo.observations[deo.step] = observation
+    deo.gradients[:, deo.step] = gradient_
+
+    return observation
+end
+
 mutable struct Trajectory
     s::RBFsurrogate
     fs::FantasyRBFsurrogate
-    ∇fs::Matrix{Float64}
+    mfs::MultiOutputFantasyRBFsurrogate
+    jacobians::Vector{Matrix{Float64}}
     fmin::Float64
     x0::Vector{Float64}
     h::Int
@@ -17,24 +76,33 @@ mutable struct AdjointTrajectory
     fmin::Float64
     x0::Vector{Float64}
     h::Int
+    observable::Union{Nothing, Observable}
 end
 
 
 # function ForwardTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)
 function Trajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)
-    fmin = minimum(s.y)
+    fmin = minimum(get_observations(s))
     d, N = size(s.X)
+
+    ∇ys = [zeros(d) for i in 1:N]
+
     fsur = fit_fsurrogate(s, h)
-    ∇fs = zeros(d, h+1)
-    return Trajectory(s, fsur, ∇fs, fmin, x0, h)
+    mfsur = fit_multioutput_fsurrogate(s, h)
+
+    jacobians = [I(d)]
+
+    return Trajectory(s, fsur, mfsur, jacobians, fmin, x0, h)
 end
 
 function AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)
     fmin = minimum(s.y)
     d, N = size(s.X)
     fsur = fit_sfsurrogate(s, h)
-    return AdjointTrajectory(s, fsur, fmin, x0, h)
+    return AdjointTrajectory(s, fsur, fmin, x0, h, nothing)
 end
+
+attach_observable!(AT::AdjointTrajectory, observable::Observable) = AT.observable = observable
 
 """
 Consider giving the perturbed surrogate a zero matrix to handle computing variations

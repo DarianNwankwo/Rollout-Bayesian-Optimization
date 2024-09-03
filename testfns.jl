@@ -11,6 +11,7 @@ end
 
 
 (testfn::TestFunction)(x::Vector{Float64}) = testfn.f(x)
+gradient(testfn::TestFunction) = testfn.∇f
 function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
     return map(
         !grad ? testfn.f : testfn.∇f,
