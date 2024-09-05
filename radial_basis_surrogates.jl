@@ -15,6 +15,28 @@ optimization process:
 # ------------------------------------------------------------------
 # 1. Operations on GP/RBF surrogates
 # ------------------------------------------------------------------
+abstract type AbstractCostFunction end
+
+struct KnownCost{F <: Function, DF <: Function, HF <: Function} <: AbstractCostFunction
+    f::F
+    ∇f::DF
+    Hf::HF
+end
+
+function KnownCost(f::Function)
+    ∇f(x) = ForwardDiff.gradient(x -> f(x), x)
+    Hf(x) = ForwardDiff.hessian(x -> f(x), x)
+
+    return KnownCost(f, ∇f, Hf)
+end
+
+(kc::KnownCost)(x::AbstractVector) = kc.f(x)
+gradient(kc::KnownCost) = kc.∇f
+hessian(kc::KnownCost) = kc.Hf
+
+UniformCost() = KnownCost(x -> 1.)
+
+
 abstract type Surrogate end
 
 struct FlexibleSurrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: Policy} <: Surrogate
@@ -45,11 +67,13 @@ end
 function eval(
     s::FlexibleSurrogate,
     x::AbstractVector,
-    θ::AbstractVector)
+    θ::AbstractVector;
+    cost::AbstractCostFunction)
     sx = LazyStruct()
     set(sx, :s, s)
     set(sx, :x, x)
     set(sx, :θ, θ)
+    set(sx, :c, cost)
 
     d, N = size(s.X)
 
@@ -98,14 +122,22 @@ function eval(
     sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μσθ...)
     sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μσθ...)
 
-    sx.α = () -> s.g(sx.μ, sx.σ, sx.θ)
-    sx.∇α = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
-    sx.Hα = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
+    sx.cx = () -> sx.c(x)
+    sx.∇cx = () -> gradient(sx.c)(x)
+    sx.Hcx = () -> hessian(sx.c)(x)
+
+    sx.αx = () -> s.g(sx.μ, sx.σ, sx.θ) * sx.cx
+    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αx * sx.∇cx
+    sx.Hαx = () -> (sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ) * sx.cx +
+                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αx*sx.Hcx
+    
+    sx.∇αθ = () -> sx.dg_dθ
 
     return sx
 end
 
-(s::FlexibleSurrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ)
+(s::FlexibleSurrogate)(x::T, θ::T; cost::AbstractCostFunction) where T <: AbstractVector = eval(s, x, θ, cost=cost)
+(s::FlexibleSurrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ, cost=UniformCost())
 
 
 struct RBFsurrogate <: Surrogate

@@ -333,7 +333,7 @@ function gather_q(T::AdjointTrajectory; optimal_index::Int64)
 end
 
 function gradient(T::AdjointTrajectory)
-    get_observations(get_)
+    # fmini = minimum(get_observations(get_base_surrogate(T)))
     fmini = minimum(T.s.y)
     best_ndx, best_step = best(T)
     fb = best_step.y
