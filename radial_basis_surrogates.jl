@@ -36,8 +36,15 @@ hessian(kc::KnownCost) = kc.Hf
 
 UniformCost() = KnownCost(x -> 1.)
 
+"""
+We can use the mechanics for our GP here to model situations where the cost is unknown
+"""
+# struct SurrogateCost
+# end
+
 
 abstract type Surrogate end
+abstract type FantasySurrogate <: Surrogate end
 
 struct FlexibleSurrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: Policy} <: Surrogate
     ψ::RBFfun
@@ -50,7 +57,8 @@ struct FlexibleSurrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64
     g::P
 end
 
-
+# TODO: Policy here should be a named parameter to emphasize the strict dependence.
+# TODO: Provide a constructor for instantiation this policy object if a function is only specified
 function FlexibleSurrogate(
     ψ::RBFfun,
     X::AbstractMatrix,
@@ -62,6 +70,40 @@ function FlexibleSurrogate(
     L = cholesky(Hermitian(K)).L
     c = L'\(L\y)
     return FlexibleSurrogate(ψ, X, K, L, y, c, σn2, g)
+end
+
+function condition(s::FlexibleSurrogate, xnew::AbstractVector, ynew::Real)
+    X = hcat(s.X, xnew)
+    y = vcat(s.y, ynew)
+
+    # Update covariance matrix and it's cholesky factorization
+    KxX = eval_KxX(s.ψ, xnew, s.X)
+    K = [s.K  KxX
+         KxX' eval_KXX(s.ψ, reshape(xnew, length(xnew), 1), σn2=s.σn2)]
+    
+    function update_cholesky(K::Matrix{Float64}, L::LowerTriangular{Float64, Matrix{Float64}})
+        # Grab entries from update covariance matrix
+        n = size(K, 1)
+        B = @view K[n:n, 1:n-1]
+        C = K[n, n]
+        
+        # Compute the updated factorizations using schur complements
+        L21 = B / L'
+        L22 = sqrt(C - first(L21*L21'))
+    
+        # Update the full factorization
+        ufK = zeros(n, n)
+        ufK[1:n-1, 1:n-1] .= L
+        ufK[n:n, 1:n-1] .= L21
+        ufK[n, n] = L22
+    
+        return LowerTriangular(ufK)
+    end
+
+    L = update_cholesky(K, s.L)
+    c = L'\(L\y)
+
+    return FlexibleSurrogate(s.ψ, X, K, L, y, c, s.σn2, s.g)
 end
 
 function eval(
@@ -112,33 +154,205 @@ function eval(
         H /= sx.σ
         return H
     end
-    sx.μσθ = () -> [sx.μ, sx.σ, sx.θ...]
 
-    sx.dg_dμ = () -> first_partial(sx.s.g, symbol=:μ)(sx.μσθ...)
-    sx.dg_dσ = () -> first_partial(sx.s.g, symbol=:σ)(sx.μσθ...)
-    sx.dg_dθ = () -> first_partial(sx.s.g, symbol=:θ)(sx.μσθ...)
+    sx.y = () -> sx.s.y
+    sx.g = () -> sx.s.g
 
-    sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μσθ...)
-    sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μσθ...)
-    sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μσθ...)
+    sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+    sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
 
     sx.cx = () -> sx.c(x)
     sx.∇cx = () -> gradient(sx.c)(x)
     sx.Hcx = () -> hessian(sx.c)(x)
 
-    sx.αx = () -> s.g(sx.μ, sx.σ, sx.θ) * sx.cx
-    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αx * sx.∇cx
+    sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx) * sx.cx
+    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αxθ * sx.∇cx
     sx.Hαx = () -> (sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ) * sx.cx +
-                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αx*sx.Hcx
+                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αxθ*sx.Hcx
     
-    sx.∇αθ = () -> sx.dg_dθ
+    sx.∇αθ = () -> sx.dg_dθ * sx.cx
+    sx.Hαθ = () -> sx.d2g_dθ * sx.cx
 
     return sx
 end
 
 (s::FlexibleSurrogate)(x::T, θ::T; cost::AbstractCostFunction) where T <: AbstractVector = eval(s, x, θ, cost=cost)
 (s::FlexibleSurrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ, cost=UniformCost())
+eval(sx) = sx.αxθ
+gradient(sx; wrt_hypers=false) = wrt_hypers ? sx.∇αθ : sx.∇αx
+hessian(sx; wrt_hypers=false) = wrt_hypers ? sx.Hαθ : sx.Hαx
 
+mutable struct FantasyFlexibleSurrogate{
+        T1<:AbstractVector{Float64},
+        T2<:AbstractMatrix{Float64},
+        T3<:Int,
+        T4<:AbstractVector{<:AbstractVector{Float64}},
+        P<:Policy} <: FantasySurrogate
+    ψ::RBFfun
+    X::T2
+    K::T2
+    L::LowerTriangular{Float64, T2}
+    y::T1
+    cs::T4
+    σn2::Real
+    g::P
+    h::T3
+    known_observed::T3
+    fantasies_observed::T3
+end
+
+function FantasyFlexibleSurrogate(s::FlexibleSurrogate, horizon::Int)
+    d, N = size(s.X)
+    K = zeros(N+horizon+1, N+horizon+1)
+    K[1:N, 1:N] = @view s.K[:,:]
+    L = LowerTriangular(zeros(N+horizon+1, N+horizon+1))
+    L[1:N, 1:N] = @view s.L[:,:]
+    X = zeros(d, N+horizon+1)
+    X[:, 1:N] = @view s.X[:, :]
+
+    return FantasyFlexibleSurrogate(
+        s.ψ, X, K, L, deepcopy(s.y), [deepcopy(s.c)], s.σn2, s.g, horizon, N, 0
+    )
+end
+
+# Write logic for conditioning on new observations
+function condition!(fs::FantasyFlexibleSurrogate, xnew::AbstractVector, ynew::Real)
+    @assert fs.fantasies_observed < fs.h + 1
+    update_ndx = fs.known_observed + fs.fantasies_observed + 1
+    # We can use the same logic here for preallocating space for X
+    fs.X[:, update_ndx] = xnew
+    fs.y = vcat(fs.y, ynew)
+
+    # Update covariance matrix and it's cholesky factorization
+    KxX = eval_KxX(fs.ψ, xnew, fs.X[:, 1:update_ndx-1])
+    fs.K[update_ndx, 1:update_ndx-1] = KxX
+    fs.K[1:update_ndx-1, update_ndx] = KxX'
+    fs.K[update_ndx, update_ndx] = first(eval_KXX(fs.ψ, reshape(xnew, length(xnew), 1), σn2=fs.σn2))
+    
+    function update_cholesky(K::Matrix{Float64}, L::Matrix{Float64})
+        # Grab entries from update covariance matrix
+        n = size(K, 1)
+        B = @view K[n:n, 1:n-1]
+        C = K[n, n]
+        
+        # Compute the updated factorizations using schur complements
+        L21 = B / L'
+        L22 = sqrt(C - first(L21*L21'))
+    
+        return L21, L22
+    end
+
+    L21, L22 = update_cholesky(
+        fs.K[1:update_ndx, 1:update_ndx],
+        fs.L[1:update_ndx-1, 1:update_ndx-1]
+    )
+    fs.L[update_ndx, 1:update_ndx-1] = L21
+    fs.L[update_ndx, update_ndx] = L22
+    
+    L = @view fs.L[1:update_ndx, 1:update_ndx]
+    c = L'\(L\fs.y)
+    push!(fs.cs, c)
+    fs.fantasies_observed += 1    
+
+    return nothing
+end
+# Write logic for evaluating FantasyFlexibleSurrogate
+function eval(
+    fs::FantasyFlexibleSurrogate,
+    x::AbstractVector,
+    θ::AbstractVector;
+    cost::AbstractCostFunction,
+    fantasy_index::Int)
+    @assert fantasy_index <= fs.h "Can only observed fantasized locations. Maximum fantasy index is $(fs.h)"
+    sx = LazyStruct()
+    set(sx, :fs, fs)
+    set(sx, :x, x)
+    set(sx, :θ, θ)
+    set(sx, :c, cost)
+    set(sx, :fantasy_index, fantasy_index)
+
+    d, N = size(fs.X)
+    ZERO_BASED_OFFSET = 1
+    FANTASY_BASED_OFFSET = 1
+    TOTAL_OFFSET = ZERO_BASED_OFFSET + FANTASY_BASED_OFFSET
+    slice = 1:fs.known_observed + fantasy_index + FANTASY_BASED_OFFSET
+
+    sx.kx = () -> eval_KxX(fs.ψ, x, (@view fs.X[:, slice]))
+    sx.∇kx = () -> eval_∇KxX(fs.ψ, x, (@view fs.X[:, slice]))
+
+    sx.μ = () -> dot(sx.kx, fs.cs[fantasy_index + TOTAL_OFFSET])
+    sx.∇μ = () -> sx.∇kx * fs.cs[fantasy_index + TOTAL_OFFSET]
+    sx.dμ = () -> vcat(sx.μ, sx.∇μ)
+    sx.Hμ = function()
+        H = zeros(d, d)
+        # for j = 1:N
+        for j = slice
+            H += fs.cs[fantasy_index + TOTAL_OFFSET][j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+        end
+        return H
+    end
+
+    sx.w = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\sx.kx)
+    sx.Dw = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\(sx.∇kx'))
+    sx.∇w = () -> sx.Dw'
+    sx.σ = () -> sqrt(fs.ψ(0) - dot(sx.kx', sx.w))
+    sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
+    sx.dσ = function()
+        kxx = eval_Dk(fs.ψ, zeros(d); D=d)
+        kxX = [eval_KxX(fs.ψ, x, fs.X[:, slice])'; eval_∇KxX(fs.ψ, x, fs.X[:, slice])]
+        σx = Symmetric(kxx - kxX * (fs.L[slice, slice]' \ (fs.L[slice, slice] \ kxX')))
+        σx = cholesky(σx).L
+        return σx
+    end 
+    sx.Hσ = function()
+        H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
+        w = sx.w
+        # for j = 1:N
+        for j = slice
+            H -= w[j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+        end
+        H /= sx.σ
+        return H
+    end
+
+    sx.y = () -> sx.fs.y[slice]
+    sx.g = () -> sx.fs.g
+
+    sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+    sx.d2g_dμ = () -> second_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dσ = () -> second_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dθ = () -> second_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+    sx.cx = () -> sx.c(x)
+    sx.∇cx = () -> gradient(sx.c)(x)
+    sx.Hcx = () -> hessian(sx.c)(x)
+
+    sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx) * sx.cx
+    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αxθ * sx.∇cx
+    sx.Hαx = () -> (sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ) * sx.cx +
+                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αxθ*sx.Hcx
+    
+    sx.∇αθ = () -> sx.dg_dθ * sx.cx
+    sx.Hαθ = () -> sx.d2g_dθ * sx.cx
+
+    return sx
+end
+
+function (fs::FantasyFlexibleSurrogate)(
+    x::T,
+    θ::T;
+    fantasy_index::Int = -1,
+    cost::AbstractCostFunction = UniformCost()) where T <: AbstractVector
+    return eval(fs, x, θ, cost=cost, fantasy_index=fantasy_index)
+end
 
 struct RBFsurrogate <: Surrogate
     ψ::RBFfun
@@ -343,7 +557,7 @@ eval(s::RBFsurrogate, x::Vector{Float64}) = eval(s, x, minimum(s.y))
 # ------------------------------------------------------------------
 # 2. Operations on Fantasized GP/RBF surrogates
 # ------------------------------------------------------------------
-mutable struct FantasyRBFsurrogate <: Surrogate
+mutable struct FantasyRBFsurrogate <: FantasySurrogate
     ψ::RBFfun
     X::Matrix{Float64}
     K::Matrix{Float64}
@@ -356,7 +570,7 @@ mutable struct FantasyRBFsurrogate <: Surrogate
     fantasies_observed::Int64
 end
 
-mutable struct SmartFantasyRBFsurrogate <: Surrogate
+mutable struct SmartFantasyRBFsurrogate <: FantasySurrogate
     ψ::RBFfun
     X::Matrix{Float64}
     K::Matrix{Float64}
@@ -383,6 +597,31 @@ function gp_draw(
         sx = s(xloc)
     else
         sx = s(xloc, fantasy_index=fantasy_index)
+    end
+
+    if with_gradient
+        @assert length(stdnormal) == dim + 1 "stdnormal has dim = $(length(stdnormal)) but observation vector has dim = $(length(xloc))"
+        return sx.dμ + sx.dσ * stdnormal
+    else
+        @assert length(stdnormal) == 1 "Function observation expects a scalar gaussian random number"
+        return sx.μ + sx.σ * stdnormal
+    end
+end
+
+function gp_draw(
+    s,
+    xloc::AbstractVector,
+    θ::AbstractVector;
+    stdnormal::Union{AbstractVector, Number},
+    with_gradient::Bool = false,
+    fantasy_index::Union{Int64, Nothing} = nothing)
+    # We can actually embed this logic directly into the evaluation of the surrogate at some arbitrary location
+    dim = length(xloc)
+
+    if isnothing(fantasy_index)
+        sx = s(xloc, θ)
+    else
+        sx = s(xloc, θ, fantasy_index=fantasy_index)
     end
 
     if with_gradient

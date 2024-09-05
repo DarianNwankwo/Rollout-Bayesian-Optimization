@@ -123,17 +123,45 @@ function rollout!(
 end
 
 
+# function adjoint_rollout!(
+#     T::AdjointTrajectory;
+#     lowerbounds::AbstractVector,
+#     upperbounds::AbstractVector,
+#     get_observation::Observable,
+#     xstarts::AbstractMatrix)
+#     # Initial draw at predetermined location not chosen by policy
+#     f0 = get_observation(T.x0)
+
+#     # Update surrogate and cache the gradient of the posterior mean field
+#     update_sfsurrogate!(T.fs, T.x0, f0)
+
+#     # Preallocate for newton solves
+#     xnext = zeros(length(T.x0))
+
+#     # Perform rollout for fantasized trajectories
+#     for j in 1:T.h
+#         # Solve base acquisition function to determine next sample location
+#         xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts, fantasy_index=j-1)
+
+#         # Draw fantasized sample at proposed location after base acquisition solve
+#         fi = get_observation(xnext)
+       
+#         # Update surrogate and cache the gradient of the posterior mean field
+#         update_sfsurrogate!(T.fs, xnext, fi)
+#     end
+# end
+
 function adjoint_rollout!(
     T::AdjointTrajectory;
-    lowerbounds::Vector{Float64},
-    upperbounds::Vector{Float64},
+    lowerbounds::AbstractVector,
+    upperbounds::AbstractVector,
     get_observation::Observable,
-    xstarts::Matrix{Float64})
+    xstarts::AbstractMatrix)
     # Initial draw at predetermined location not chosen by policy
-    f0 = get_observation(T.x0)
+    f0 = get_observation(T.x0, T.θ)
 
     # Update surrogate and cache the gradient of the posterior mean field
-    update_sfsurrogate!(T.fs, T.x0, f0)
+    condition!(T.fs, T.x0, f0)
 
     # Preallocate for newton solves
     xnext = zeros(length(T.x0))
@@ -141,13 +169,13 @@ function adjoint_rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts, fantasy_index=j-1)
+        xnext .= multistart_base_solve(T.fs, lowerbounds, upperbounds, xstarts, T.θ, fantasy_index=j-1)
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi = get_observation(xnext)
+        fi = get_observation(xnext, T.θ)
        
         # Update surrogate and cache the gradient of the posterior mean field
-        update_sfsurrogate!(T.fs, xnext, fi)
+        condition!(T.fs, xnext, fi)
     end
 end
 

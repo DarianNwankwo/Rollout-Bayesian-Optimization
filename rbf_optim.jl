@@ -43,7 +43,49 @@ function ei_solve(s::SmartFantasyRBFsurrogate, lbs::Vector{Float64}, ubs::Vector
     )
 
     return Optim.minimizer(res), res
-end 
+end
+
+function base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector, ubs::AbstractVector
+    , xstart::AbstractVector, θinit::AbstractVector; fantasy_index::Int)
+    fun(x) = -eval(s(x, θinit, fantasy_index=fantasy_index))
+    function fun_grad!(g, x)
+        g[:] = -gradient(s(x, θinit, fantasy_index=fantasy_index))
+    end
+    function fun_hess!(h, x)
+        h[:, :] = -hessian(s(x, θinit, fantasy_index=fantasy_index))
+    end
+
+    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, xstart)
+    dfc = TwiceDifferentiableConstraints(lbs, ubs)
+    res = optimize(
+        df, dfc, xstart, IPNewton(),
+        Optim.Options(x_tol=1e-3, f_tol=1e-3)
+        # Optim.Options(f_tol=1e-16)
+    )
+
+    return Optim.minimizer(res), res
+end
+
+function base_solve(s::FlexibleSurrogate, lbs::AbstractVector, ubs::AbstractVector,
+    xstart::AbstractVector, θinit::AbstractVector)
+    fun(x) = -eval(s(x, θinit))
+    function fun_grad!(g, x)
+        g[:] = -gradient(s(x, θinit))
+    end
+    function fun_hess!(h, x)
+        h[:, :] = -hessian(s(x, θinit))
+    end
+
+    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, xstart)
+    dfc = TwiceDifferentiableConstraints(lbs, ubs)
+    res = optimize(
+        df, dfc, xstart, IPNewton(),
+        Optim.Options(x_tol=1e-3, f_tol=1e-3)
+        # Optim.Options(f_tol=1e-16)
+    )
+
+    return Optim.minimizer(res), res
+end
 
 function multistart_ei_solve(s::FantasyRBFsurrogate, lbs::Vector{Float64},
     ubs::Vector{Float64}, xstarts::Matrix{Float64})::Vector{Float64}
@@ -78,6 +120,48 @@ function multistart_ei_solve(s::SmartFantasyRBFsurrogate, lbs::Vector{Float64},
         catch e
             println(e)
         end
+    end
+    
+    candidates = filter(pair -> !any(isnan.(pair[1])), candidates)
+    mini, j_mini = findmin(pair -> pair[2], candidates)
+    minimizer = candidates[j_mini][1]
+
+    return minimizer
+end
+
+function multistart_base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector,
+    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector; fantasy_index::Int)::AbstractVector
+    candidates = []
+    
+    for i in 1:size(xstarts, 2)
+        xi = xstarts[:,i]
+        # try
+            minimizer, res = base_solve(s, lbs, ubs, xi, θinit, fantasy_index=fantasy_index)
+            push!(candidates, (minimizer, minimum(res)))
+        # catch e
+        #     println(e)
+        # end
+    end
+    
+    candidates = filter(pair -> !any(isnan.(pair[1])), candidates)
+    mini, j_mini = findmin(pair -> pair[2], candidates)
+    minimizer = candidates[j_mini][1]
+
+    return minimizer
+end
+
+function multistart_base_solve(s::FlexibleSurrogate, lbs::AbstractVector,
+    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector)::AbstractVector
+    candidates = []
+    
+    for i in 1:size(xstarts, 2)
+        xi = xstarts[:,i]
+        # try
+            minimizer, res = base_solve(s, lbs, ubs, xi, θinit)
+            push!(candidates, (minimizer, minimum(res)))
+        # catch e
+        #     println(e)
+        # end
     end
     
     candidates = filter(pair -> !any(isnan.(pair[1])), candidates)

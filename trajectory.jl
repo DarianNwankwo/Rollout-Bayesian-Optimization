@@ -25,7 +25,7 @@ which produces stochastic observations and their gradients.
 
 """
 mutable struct StochasticObservable <: Observable
-    fs::SmartFantasyRBFsurrogate
+    fs::FantasySurrogate
     stdnormal::AbstractMatrix
     trajectory_length::Int64
     step::Int64
@@ -56,6 +56,18 @@ function (so::StochasticObservable)(x::AbstractVector)::Number
     @assert so.step < so.trajectory_length "Maximum invocations have been used"
     observation, gradient_... = gp_draw(
         so.fs, x, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
+    )
+    so.step += 1
+    so.observations[so.step] = observation
+    so.gradients[:, so.step] = gradient_
+
+    return observation
+end
+
+function (so::StochasticObservable)(x::AbstractVector, θ::AbstractVector)::Number
+    @assert so.step < so.trajectory_length "Maximum invocations have been used"
+    observation, gradient_... = gp_draw(
+        so.fs, x, θ, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
     )
     so.step += 1
     so.observations[so.step] = observation
@@ -161,10 +173,11 @@ A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in th
 - `AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `AdjointTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
 mutable struct AdjointTrajectory <: Trajectory
-    s::RBFsurrogate
-    fs::SmartFantasyRBFsurrogate
-    fmin::Float64
-    x0::Vector{Float64}
+    s::Surrogate
+    fs::FantasySurrogate
+    fmin::Real
+    x0::AbstractVector
+    θ::AbstractVector
     h::Int
     observable::Union{Nothing, Observable}
 end
@@ -180,7 +193,7 @@ Constructor for `ForwardTrajectory`.
 # Returns:
 - `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
 """
-function ForwardTrajectory(; base_surrogate::RBFsurrogate, start::Vector{Float64}, horizon::Int)
+function ForwardTrajectory(; base_surrogate::Surrogate, start::AbstractVector, horizon::Int)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
 
@@ -212,12 +225,14 @@ Create an `AdjointTrajectory` object using a base surrogate model, a starting po
 - A smart fantasy surrogate (`fsur`) is fitted based on the `base_surrogate` and the given `horizon`.
 - The `observable` is initialized as `nothing` and should be set later.
 """
-function AdjointTrajectory(; base_surrogate::Surrogate, start::AbstractVector, horizon::Int)
+function AdjointTrajectory(; base_surrogate::Surrogate, start::AbstractVector, hypers::AbstractVector, horizon::Int)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
-    fsur = fit_sfsurrogate(base_surrogate, horizon)
+    # More generally, this should support calling the constructor of the type of Surrogate
+    # fsur = fit_sfsurrogate(base_surrogate, horizon)
+    fsur = FantasyFlexibleSurrogate(base_surrogate, horizon)
     observable = nothing
-    return AdjointTrajectory(base_surrogate, fsur, fmin, start, horizon, observable)
+    return AdjointTrajectory(base_surrogate, fsur, fmin, start, hypers, horizon, observable)
 end
 
 """
