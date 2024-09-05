@@ -2,6 +2,7 @@ using LinearAlgebra
 
 include("lazy_struct.jl")
 include("radial_basis_functions.jl")
+include("base_policy.jl")
 """
 Here we distinguish between four possible surrogates that can be used in the
 optimization process:
@@ -15,6 +16,97 @@ optimization process:
 # 1. Operations on GP/RBF surrogates
 # ------------------------------------------------------------------
 abstract type Surrogate end
+
+struct FlexibleSurrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: Policy} <: Surrogate
+    ψ::RBFfun
+    X::T2
+    K::T2
+    L::LowerTriangular{Float64, T2}
+    y::T1
+    c::T1
+    σn2::Real
+    g::P
+end
+
+
+function FlexibleSurrogate(
+    ψ::RBFfun,
+    X::AbstractMatrix,
+    y::AbstractVector,
+    g::Policy;
+    σn2::Number = 1e-6)
+    d, N = size(X)
+    K = eval_KXX(ψ, X, σn2=σn2)
+    L = cholesky(Hermitian(K)).L
+    c = L'\(L\y)
+    return FlexibleSurrogate(ψ, X, K, L, y, c, σn2, g)
+end
+
+function eval(
+    s::FlexibleSurrogate,
+    x::AbstractVector,
+    θ::AbstractVector)
+    sx = LazyStruct()
+    set(sx, :s, s)
+    set(sx, :x, x)
+    set(sx, :θ, θ)
+
+    d, N = size(s.X)
+
+    sx.kx = () -> eval_KxX(s.ψ, x, s.X)
+    sx.∇kx = () -> eval_∇KxX(s.ψ, x, s.X)
+
+    sx.μ = () -> dot(sx.kx, s.c)
+    sx.∇μ = () -> sx.∇kx * s.c
+    sx.dμ = () -> vcat(sx.μ, sx.∇μ)
+    sx.Hμ = function()
+        H = zeros(d, d)
+        for j = 1:N
+            H += s.c[j] * eval_Hk(s.ψ, x-s.X[:,j])
+        end
+        return H
+    end
+
+    sx.w = () -> s.L'\(s.L\sx.kx)
+    sx.Dw = () -> s.L'\(s.L\(sx.∇kx'))
+    sx.∇w = () -> sx.Dw'
+    sx.σ = () -> sqrt(s.ψ(0) - dot(sx.kx', sx.w))
+    sx.dσ = function()
+        kxx = eval_Dk(sx.s.ψ, zeros(d); D=d)
+        kxX = [eval_KxX(sx.s.ψ, x, sx.s.X)'; eval_∇KxX(sx.s.ψ, x, sx.s.X)]
+        σx = Symmetric(kxx - kxX * (sx.s.L' \ (sx.s.L \ kxX')))
+        σx = cholesky(σx).L
+        return σx
+    end
+    sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
+    sx.Hσ = function()
+        H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
+        w = sx.w
+        for j = 1:N
+            H -= w[j] * eval_Hk(s.ψ, x-s.X[:,j])
+        end
+        H /= sx.σ
+        return H
+    end
+    sx.μσθ = () -> [sx.μ, sx.σ, sx.θ...]
+
+    sx.dg_dμ = () -> first_partial(sx.s.g, symbol=:μ)(sx.μσθ...)
+    sx.dg_dσ = () -> first_partial(sx.s.g, symbol=:σ)(sx.μσθ...)
+    sx.dg_dθ = () -> first_partial(sx.s.g, symbol=:θ)(sx.μσθ...)
+
+    sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μσθ...)
+    sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μσθ...)
+    sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μσθ...)
+
+    sx.α = () -> s.g(sx.μ, sx.σ, sx.θ)
+    sx.∇α = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
+    sx.Hα = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
+
+    return sx
+end
+
+(s::FlexibleSurrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ)
+
 
 struct RBFsurrogate <: Surrogate
     ψ::RBFfun
@@ -1081,14 +1173,8 @@ end
 Given a multi-output GP surrogate and a point x, draw a sample from the
 posterior distribution of the function value and its gradient at x.
 """
-function get_observations(s::Surrogate)
-    return s.y
-end
-
-function get_grad_observations(s::MultiOutputFantasyRBFsurrogate)
-    return s.∇y
-end
-
+get_observations(s::Surrogate) = s.y
+get_grad_observations(s::MultiOutputFantasyRBFsurrogate) = s.∇y
 get_covariates(s::Surrogate) = s.X
 
 # ------------------------------------------------------------------

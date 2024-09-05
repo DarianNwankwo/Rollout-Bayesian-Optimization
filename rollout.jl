@@ -243,13 +243,6 @@ function gradient(T::ForwardTrajectory)
     return transpose(-∇fb'*opt_jacobian)
 end
 
-# function resolve(T::AdjointTrajectory)
-#     path = sample(T)
-#     fmini = minimum(T.s.y)
-#     best_ndx, best_step = best(T)
-#     fb = best_step.y
-#     return max(fmini - fb, 0.)
-# end
 
 function get_fantasy_observations(T::AdjointTrajectory)
     N = T.fs.known_observed
@@ -270,12 +263,13 @@ end
 function solve_dual_y(T::AdjointTrajectory, x_duals::Vector{Vector{Float64}}; optimal_index::Int64, solve_index::Int64)
     y_dual = 0.
     dim = length(x_duals[1])
+    δx = rand(dim)
     
     for policy_solve_step in solve_index+1:optimal_index
         dp_sur = fit_data_perturbation_surrogate(T.fs, policy_solve_step - 1)
         sxi = recover_policy_solve(T, solve_index=policy_solve_step)
 
-        δx = rand(dim)
+        # δx = rand(dim)
         dp_sx = eval(dp_sur, sxi, δx=δx, current_step=solve_index)
         
         y_dual += dot(dp_sx.∇EI, x_duals[policy_solve_step])
@@ -339,6 +333,7 @@ function gather_q(T::AdjointTrajectory; optimal_index::Int64)
 end
 
 function gradient(T::AdjointTrajectory)
+    get_observations(get_)
     fmini = minimum(T.s.y)
     best_ndx, best_step = best(T)
     fb = best_step.y
@@ -420,7 +415,7 @@ function deterministic_simulate_trajectory(
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=tp.x0, horizon=tp.h)
+        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=starting_point(tp), horizon=tp.h)
         sampler = DeterministicObservable(testfn, max_invocations=tp.h + 1)
         attach_observable!(T, sampler)
         adjoint_rollout!(T,
@@ -459,7 +454,7 @@ function simulate_adjoint_trajectory(
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=starting_point(T), horizon=tp.h)
+        T = AdjointTrajectory(base_surrogate=deepcopy_s, start=starting_point(tp), horizon=tp.h)
         sampler = StochasticObservable(
             surrogate=T.fs, 
             stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
