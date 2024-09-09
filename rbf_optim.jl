@@ -45,9 +45,9 @@ function ei_solve(s::SmartFantasyRBFsurrogate, lbs::Vector{Float64}, ubs::Vector
     return Optim.minimizer(res), res
 end
 
-function base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector, ubs::AbstractVector
-    , xstart::AbstractVector, θinit::AbstractVector; fantasy_index::Int)
-    fun(x) = -eval(s(x, θinit, fantasy_index=fantasy_index))
+function base_solve(s::FantasySurrogate, lbs::AbstractVector, ubs::AbstractVector
+    , xstart::AbstractVector, θinit::AbstractVector; fantasy_index::Int, cost::AbstractCostFunction)
+    fun(x) = -eval(s(x, θinit, fantasy_index=fantasy_index, cost=cost))
     function fun_grad!(g, x)
         g[:] = -gradient(s(x, θinit, fantasy_index=fantasy_index))
     end
@@ -66,9 +66,9 @@ function base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector, ubs::Abstr
     return Optim.minimizer(res), res
 end
 
-function base_solve(s::FlexibleSurrogate, lbs::AbstractVector, ubs::AbstractVector,
-    xstart::AbstractVector, θinit::AbstractVector)
-    fun(x) = -eval(s(x, θinit))
+function base_solve(s::Surrogate, lbs::AbstractVector, ubs::AbstractVector,
+    xstart::AbstractVector, θinit::AbstractVector; cost::AbstractCostFunction)
+    fun(x) = -eval(s(x, θinit, cost=cost))
     function fun_grad!(g, x)
         g[:] = -gradient(s(x, θinit))
     end
@@ -129,14 +129,14 @@ function multistart_ei_solve(s::SmartFantasyRBFsurrogate, lbs::Vector{Float64},
     return minimizer
 end
 
-function multistart_base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector,
-    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector; fantasy_index::Int)::AbstractVector
+function multistart_base_solve(s::FantasySurrogate, lbs::AbstractVector,
+    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector; fantasy_index::Int, cost::AbstractCostFunction)::AbstractVector
     candidates = []
     
     for i in 1:size(xstarts, 2)
         xi = xstarts[:,i]
         # try
-            minimizer, res = base_solve(s, lbs, ubs, xi, θinit, fantasy_index=fantasy_index)
+            minimizer, res = base_solve(s, lbs, ubs, xi, θinit, fantasy_index=fantasy_index, cost=cost)
             push!(candidates, (minimizer, minimum(res)))
         # catch e
         #     println(e)
@@ -150,14 +150,14 @@ function multistart_base_solve(s::FantasyFlexibleSurrogate, lbs::AbstractVector,
     return minimizer
 end
 
-function multistart_base_solve(s::FlexibleSurrogate, lbs::AbstractVector,
-    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector)::AbstractVector
+function multistart_base_solve(s::Surrogate, lbs::AbstractVector,
+    ubs::AbstractVector, xstarts::AbstractMatrix, θinit::AbstractVector; cost::AbstractCostFunction)::AbstractVector
     candidates = []
     
     for i in 1:size(xstarts, 2)
         xi = xstarts[:,i]
         # try
-            minimizer, res = base_solve(s, lbs, ubs, xi, θinit)
+            minimizer, res = base_solve(s, lbs, ubs, xi, θinit, cost=cost)
             push!(candidates, (minimizer, minimum(res)))
         # catch e
         #     println(e)

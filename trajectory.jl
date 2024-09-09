@@ -25,7 +25,7 @@ which produces stochastic observations and their gradients.
 
 """
 mutable struct StochasticObservable <: Observable
-    fs::FantasySurrogate
+    fs::AbstractFantasySurrogate
     stdnormal::AbstractMatrix
     trajectory_length::Int64
     step::Int64
@@ -117,7 +117,7 @@ and its corresponding gradient for a given input vector `x`.
 - `observation`: The generated observation for the input `x`.
 
 """
-function (deo::DeterministicObservable)(x::AbstractVector)::Number
+function (deo::DeterministicObservable)(x::AbstractVector, _::AbstractVector)::Number
     @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
     observation, gradient_ = testfn(x), gradient(testfn)(x)
     deo.step += 1
@@ -173,13 +173,14 @@ A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in th
 - `AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `AdjointTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
 mutable struct AdjointTrajectory <: Trajectory
-    s::Surrogate
-    fs::FantasySurrogate
+    s::AbstractSurrogate
+    fs::AbstractFantasySurrogate
     fmin::Real
     x0::AbstractVector
     θ::AbstractVector
     h::Int
-    observable::Union{Nothing, Observable}
+    observable::Union{Missing, Observable}
+    cost::AbstractCostFunction
 end
 
 """
@@ -193,7 +194,7 @@ Constructor for `ForwardTrajectory`.
 # Returns:
 - `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
 """
-function ForwardTrajectory(; base_surrogate::Surrogate, start::AbstractVector, horizon::Int)
+function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Int)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
 
@@ -225,14 +226,17 @@ Create an `AdjointTrajectory` object using a base surrogate model, a starting po
 - A smart fantasy surrogate (`fsur`) is fitted based on the `base_surrogate` and the given `horizon`.
 - The `observable` is initialized as `nothing` and should be set later.
 """
-function AdjointTrajectory(; base_surrogate::Surrogate, start::AbstractVector, hypers::AbstractVector, horizon::Int)
+function AdjointTrajectory(;
+    base_surrogate::AbstractSurrogate,
+    start::AbstractVector,
+    hypers::AbstractVector,
+    horizon::Int,
+    cost::AbstractCostFunction)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
-    # More generally, this should support calling the constructor of the type of Surrogate
-    # fsur = fit_sfsurrogate(base_surrogate, horizon)
-    fsur = FantasyFlexibleSurrogate(base_surrogate, horizon)
-    observable = nothing
-    return AdjointTrajectory(base_surrogate, fsur, fmin, start, hypers, horizon, observable)
+    fsur = FantasySurrogate(base_surrogate, horizon)
+    observable = missing
+    return AdjointTrajectory(base_surrogate, fsur, fmin, start, hypers, horizon, observable, cost)
 end
 
 """
@@ -282,12 +286,13 @@ in the surrogate at the initial point.
 that of the minimum from the best value known from the known locations.
 """
 Base.@kwdef mutable struct TrajectoryParameters
-    x0::Vector{Float64}
+    x0::AbstractVector
     h::Int
     mc_iters::Int
     rnstream_sequence::Array{Float64, 3}
-    lbs::Vector{Float64}
-    ubs::Vector{Float64}
+    lbs::AbstractVector
+    ubs::AbstractVector
+    θ::AbstractVector
 
     function TrajectoryParameters(
         x0::Vector{Float64},
@@ -295,7 +300,8 @@ Base.@kwdef mutable struct TrajectoryParameters
         mc_iters::Int,
         rnstream::Array{Float64, 3},
         lbs::Vector{Float64},
-        ubs::Vector{Float64}
+        ubs::Vector{Float64},
+        θ::AbstractVector
     )
         function check_dimensions(x0::Vector{Float64}, lbs::Vector{Float64}, ubs::Vector{Float64})
             n = length(x0)
@@ -311,12 +317,13 @@ Base.@kwdef mutable struct TrajectoryParameters
         check_dimensions(x0, lbs, ubs)
         # check_stream_dimensions(rnstream_sequence, length(x0), h, mc_iters)
     
-        return new(x0, h, mc_iters, rnstream, lbs, ubs)
+        return new(x0, h, mc_iters, rnstream, lbs, ubs, θ)
     end
 end
 
 function initialize_trajectory_parameters(;
     start::AbstractVector,
+    hypers::AbstractVector,
     horizon::Int,
     mc_iterations::Int,
     use_low_discrepancy_sequence::Bool,
@@ -328,10 +335,11 @@ function initialize_trajectory_parameters(;
         rns = randn(mc_iterations, length(lowerbounds) + 1, horizon + 1)
     end
 
-    return TrajectoryParameters(start, horizon, mc_iterations, rns, lowerbounds, upperbounds)
+    return TrajectoryParameters(start, horizon, mc_iterations, rns, lowerbounds, upperbounds, hypers)
 end
 
 get_bounds(tp::TrajectoryParameters) = (tp.lbs, tp.ubs)
 each_trajectory(tp::TrajectoryParameters) = 1:tp.mc_iters
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
 starting_point(tp::TrajectoryParameters) = tp.x0
+hyperparameters(tp::TrajectoryParameters) = tp.θ

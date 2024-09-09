@@ -169,7 +169,9 @@ function adjoint_rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_base_solve(T.fs, lowerbounds, upperbounds, xstarts, T.θ, fantasy_index=j-1)
+        xnext .= multistart_base_solve(
+            T.fs, lowerbounds, upperbounds, xstarts, T.θ, fantasy_index=j-1, cost=T.cost
+        )
 
         # Draw fantasized sample at proposed location after base acquisition solve
         fi = get_observation(xnext, T.θ)
@@ -198,12 +200,6 @@ function sample(T::ForwardTrajectory)
             ∇f=T.mfs.∇y[:, i - ∇f_offset]
         ) for i in fantasy_slice
     ]
-    # return [
-    #     (
-    #         x=T.fs.X[:,i],
-    #         y=T.fs.y[i]
-    #     ) for i in fantasy_slice
-    # ]
 end
 
 function sample(T::AdjointTrajectory)
@@ -219,30 +215,9 @@ end
 
 
 function best(T::Union{ForwardTrajectory, AdjointTrajectory})
-    # Filter function to remove elements which have close x-values to their preceding element
-    function find_min_index(path; epsilon=.01)
-        # Initial values set to the first tuple in the path
-        min_y = path[1].y
-        min_x = path[1].x
-        min_idx = 1
-    
-        # Start from the second tuple
-        for i in 2:length(path)
-            # If a new potential minimum y is found and its x value is not epsilon close to the current minimum's x
-            if path[i].y < min_y && norm(path[i].x - min_x) > epsilon
-                min_y = path[i].y
-                min_x = path[i].x
-                min_idx = i
-            end
-        end
-    
-        return min_idx
-    end
-
-    # step[2] corresponds to the function value
     path = sample(T)
-    minndx = find_min_index(path)
-    return minndx, path[minndx]
+    trajectory_index = get_minimum_index(T) - 1
+    return trajectory_index, path[trajectory_index + 1]
 end
 
 
@@ -283,100 +258,117 @@ function recover_policy_solve(T::AdjointTrajectory; solve_index::Int64)
 
     N = T.fs.known_observed
     xopt = T.fs.X[:, N + solve_index + 1]
-    sx = T.fs(xopt, fantasy_index=solve_index-1)
+    sx = T.fs(xopt, T.θ, fantasy_index=solve_index-1)
     
     return sx
 end
 
-function solve_dual_y(T::AdjointTrajectory, x_duals::Vector{Vector{Float64}}; optimal_index::Int64, solve_index::Int64)
+function solve_dual_y(
+    T::AdjointTrajectory,
+    x_duals::Vector{Vector{Float64}};
+    optimal_index::Int,
+    solve_index::Int)
     y_dual = 0.
     dim = length(x_duals[1])
     δx = rand(dim)
     
     for policy_solve_step in solve_index+1:optimal_index
-        dp_sur = fit_data_perturbation_surrogate(T.fs, policy_solve_step - 1)
+        dp_sur = DataPerturbationSurrogate(reference_surrogate=T.fs, fantasy_step=policy_solve_step - 1)
         sxi = recover_policy_solve(T, solve_index=policy_solve_step)
 
         # δx = rand(dim)
-        dp_sx = eval(dp_sur, sxi, δx=δx, current_step=solve_index)
+        dp_sx = eval(dp_sur, sxi, δx=δx, fantasy_index=solve_index)
         
-        y_dual += dot(dp_sx.∇EI, x_duals[policy_solve_step])
+        y_dual += dot(gradient(dp_sx), x_duals[policy_solve_step])
     end
 
     return y_dual
 end
 
-function solve_dual_x(T::AdjointTrajectory, y_duals::Vector{Float64}, x_duals::Vector{Vector{Float64}}; optimal_index::Int64, solve_index::Int64)
+function solve_dual_x(
+    T::AdjointTrajectory,
+    y_duals::AbstractVector,
+    x_duals::Vector{Vector{Float64}};
+    optimal_index::Int, 
+    solve_index::Int)
     sx = recover_policy_solve(T, solve_index=solve_index)
     x_dual = -sx.∇μ * y_duals[solve_index + 1]
     dim = length(x_duals[1])
     I_d = Matrix{Float64}(I(dim))
     
     for policy_solve_step in solve_index+1:optimal_index
-        sp_sur = fit_spatial_perturbation_surrogate(T.fs, policy_solve_step - 1)
+        sp_sur = SpatialPerturbationSurrogate(reference_surrogate=T.fs, fantasy_step=policy_solve_step - 1)
         sxi = recover_policy_solve(T, solve_index=policy_solve_step)
 
         dri_dxj = zeros(size(I_d))
         for j in 1:dim
             δx = I_d[:, j]
-            sp_sx = eval(sp_sur, sxi, δx=δx, current_step=solve_index)
-            dri_dxj[:, j] = sp_sx.∇EI
+            sp_sx = eval(sp_sur, sxi, δx=δx, fantasy_index=solve_index)
+            dri_dxj[:, j] = gradient(sp_sx)
         end
         x_dual -= dri_dxj' * x_duals[policy_solve_step]
     end
 
-    x_dual = sx.HEI' \ x_dual
+    x_dual = hessian(sx)' \ x_dual
     
     return x_dual
 end
 
-function gather_g(T::AdjointTrajectory; optimal_index::Int64)
-    sx = recover_policy_solve(T, solve_index=1)
+function gather_g(T::AdjointTrajectory; optimal_index::Int)
+    sx = recover_policy_solve(T, solve_index=0)
     dim = length(sx.∇μ)
-    g::Vector{AbstractMatrix} = [sx.∇μ']
+    g::Vector{AbstractMatrix} = [sx.∇μ'] # T.observable.gradients[:, optimal_index] I think
     I_d = Matrix{Float64}(I(dim))
 
     for policy_solve_step in 1:optimal_index
         # Preallocate policy perturbation
         drj_dx0 = zeros(size(I_d))
         # Fit the spatial perturbation surrogate wrt to x0 only
-        # sp_sur = fit_spatial_perturbation_surrogate(T.fs, 0)
-        sp_sur = fit_spatial_perturbation_surrogate(T.fs, policy_solve_step - 1)
+        sp_sur = SpatialPerturbationSurrogate(reference_surrogate=T.fs, fantasy_step=policy_solve_step - 1)
         # Recover the `solve_index` policy and perturb wrt to x0
         sxj = recover_policy_solve(T, solve_index=policy_solve_step)
         for j in 1:dim
             δx = I_d[:, j]
-            sp_sx = eval(sp_sur, sxj, δx=δx, current_step=0)
-            drj_dx0[:, j] = sp_sx.∇EI
+            sp_sx = eval(sp_sur, sxj, δx=δx, fantasy_index=0)
+            drj_dx0[:, j] = gradient(sp_sx)
         end
         
         push!(g, drj_dx0)
-        # push!(g, zeros(1, dim))
     end
 
     return g
 end
 
-function gather_q(T::AdjointTrajectory; optimal_index::Int64)
+function gather_q(T::AdjointTrajectory; optimal_index::Int)
+    q::Vector{AbstractMatrix} = []
+
+    for solve_index in 1:optimal_index
+        sxj = recover_policy_solve(T, solve_index=solve_index)
+        push!(q, hessian(sxj, wrt_hypers=true))
+    end
+    
+    return q
 end
 
+# We can add a named parameter for grabbing gradients with respect to space or hypers
 function gradient(T::AdjointTrajectory)
-    # fmini = minimum(get_observations(get_base_surrogate(T)))
-    fmini = minimum(T.s.y)
-    best_ndx, best_step = best(T)
+    fmini = minimum(get_observations(get_base_surrogate(T)))
+    t, best_step = best(T)
     fb = best_step.y
+    xdim, θdim = length(T.x0), length(T.θ)
 
-    if fmini <= fb
-        return zeros(length(best_step.x))
-    end
+    # Case #1: Nothing along the trajectory was found to be better than what has been observed
+    if fmini <= fb return (∇x=zeros(xdim), ∇θ=zeros(θdim)) end
 
-    t = get_minimum_index(T) - 1 # first sample isn't solved via an optimization routine
+    # Case #2: The initial sample was the best step along the trajectory
     if t == 0
         # We should replace the sampled gradient below with the gradient of the mean field
-        return convert(Vector, -T.observable.gradients[:, t+1])
+        ∇x = convert(Vector, -T.observable.gradients[:, t+1])
+        return (∇x=∇x, ∇θ=zeros(θdim))
     end
-    dim = length(T.x0)
-    xbars = [zeros(dim) for _ in 1:t]
+    
+    # Case #3: The best step along the trajectory was at a non-trivial step (>= 1)
+    xbars = [zeros(xdim) for _ in 1:t]
     ybars = zeros(t+1)
 
     # Initialize backsubstitution procedure
@@ -387,14 +379,18 @@ function gradient(T::AdjointTrajectory)
         ybars[j] = solve_dual_y(T, xbars, optimal_index=t, solve_index=j-1)
     end
 
-    g = gather_g(T, optimal_index=t);
+    g = gather_g(T, optimal_index=t)
+    q = gather_q(T, optimal_index=t)
 
-    grad = g[1]' * ybars[1]
+    grad_x = g[1]' * ybars[1]
+    grad_θ = zeros(length(T.θ))
     for j in 1:length(xbars)
-        grad += g[j+1]' * xbars[j]
+        grad_x += g[j+1]' * xbars[j]
+        grad_θ += q[j]' * xbars[j]
     end
+    grad_x = convert(Vector, grad_x)
 
-    return convert(Vector, -grad)
+    return (∇x=-grad_x, ∇θ=-grad_θ)
 end
 
 
@@ -407,7 +403,7 @@ function simulate_forward_trajectory(
     deepcopy_s = Base.deepcopy(s)
     lowerbounds, upperbounds = get_bounds(tp)
 
-    for sample_ndx in each_trajectory(tp)
+    for sample_index in each_trajectory(tp)
         # Rollout trajectory
         T = ForwardTrajectory(base_surrogate=deepcopy_s, start=starting_point(tp), horizon=tp.h)
         rollout!(
@@ -419,8 +415,8 @@ function simulate_forward_trajectory(
         )
 
         # Evaluate rolled out trajectory
-        resolutions[sample_ndx] = resolve(T)
-        gradient_resolutions[:, sample_ndx] = gradient(T)
+        resolutions[sample_index] = resolve(T)
+        gradient_resolutions[:, sample_index] = gradient(T)
     end
 
     # Average across trajectories
@@ -513,5 +509,97 @@ function simulate_adjoint_trajectory(
     else
         ∇μ = mean(gradient_resolutions, dims=2)
         return  μ, σ, ∇μ
+    end
+end
+
+function deterministic_simulate_trajectory(
+    s::Surrogate,
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::AbstractMatrix,
+    testfn::TestFunction,
+    cost::AbstractCostFunction = UniformCost())
+    deepcopy_s = Base.deepcopy(s)
+    lowerbounds, upperbounds = get_bounds(tp)
+
+    # Rollout trajectory
+    T = AdjointTrajectory(
+        base_surrogate=deepcopy_s,
+        start=starting_point(tp),
+        horizon=tp.h,
+        cost=cost,
+        hypers=hyperparameters(tp)
+    )
+    sampler = DeterministicObservable(testfn, max_invocations=tp.h + 1)
+    attach_observable!(T, sampler)
+    adjoint_rollout!(T,
+        lowerbounds=lowerbounds,
+        upperbounds=upperbounds,
+        get_observation=get_observable(T),
+        xstarts=inner_solve_xstarts,
+    )
+
+    μ = resolve(T)
+    σ = 0.
+    g_ = gradient(T)
+    ∇μx = g_.∇x
+    ∇μθ = g_.∇θ
+
+    return  μ, σ, ∇μx, ∇μθ
+end
+
+
+function simulate_adjoint_trajectory(
+    s::Surrogate,
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::AbstractMatrix,
+    resolutions::AbstractVector,
+    spatial_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
+    hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
+    cost::AbstractCostFunction = UniformCost())
+    deepcopy_s = Base.deepcopy(s)
+    lowerbounds, upperbounds = get_bounds(tp)
+
+    for sample_index in each_trajectory(tp)
+        # Rollout trajectory
+        T = AdjointTrajectory(
+            base_surrogate=deepcopy_s,
+            start=starting_point(tp),
+            hypers=hyperparameters(tp),
+            horizon=tp.h,
+            cost=cost
+        )
+        sampler = StochasticObservable(
+            surrogate=T.fs, 
+            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
+            max_invocations=tp.h + 1
+        )
+        attach_observable!(T, sampler)
+
+        adjoint_rollout!(
+            T,
+            lowerbounds=lowerbounds,
+            upperbounds=upperbounds,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts
+        )
+
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
+        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
+            ∇x, ∇θ = gradient(T)
+            spatial_gradients_container[:, sample_index] = ∇x
+            hyperparameter_gradients_container[:, sample_index] = ∇θ
+        end
+    end
+
+    μ = mean(resolutions)
+    σ = std(resolutions, mean=μ)
+    
+    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
+        return μ, σ
+    else
+        ∇μx = mean(spatial_gradients_container, dims=2)
+        ∇μθ = mean(hyperparameter_gradients_container, dims=2)
+        return  μ, σ, ∇μx, ∇μθ
     end
 end
