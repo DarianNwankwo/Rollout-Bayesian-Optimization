@@ -126,7 +126,7 @@ function adjoint_rollout!(
     T::AdjointTrajectory;
     lowerbounds::AbstractVector,
     upperbounds::AbstractVector,
-    get_observation::Observable,
+    get_observation::AbstractObservable,
     xstarts::AbstractMatrix)
     # Initial draw at predetermined location not chosen by policy
     f0 = get_observation(T.x0, T.θ)
@@ -192,7 +192,7 @@ function best(T::Union{ForwardTrajectory, AdjointTrajectory})
 end
 
 
-function resolve(T::Trajectory)
+function resolve(T::AbstractTrajectory)
     path = sample(T)
     fmini = minimum(get_observations(get_base_surrogate(T)))
     best_ndx, best_step = best(T)

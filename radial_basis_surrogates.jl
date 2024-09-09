@@ -20,33 +20,53 @@ abstract type AbstractCostFunction end
 abstract type KnownCostFunction <: AbstractCostFunction end
 abstract type UnknownCostFunction <: AbstractCostFunction end
 
-struct KnownCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
+struct NonUniformCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
     f::F
     ∇f::DF
     Hf::HF
 end
 
-function KnownCost(f::Function)
+function NonUniformCost(f::Function)
     ∇f(x) = ForwardDiff.gradient(x -> f(x), x)
     Hf(x) = ForwardDiff.hessian(x -> f(x), x)
 
-    return KnownCost(f, ∇f, Hf)
+    return NonUniformCost(f, ∇f, Hf)
 end
 
-(kc::KnownCost)(x::AbstractVector) = kc.f(x)
-gradient(kc::KnownCost) = kc.∇f
-hessian(kc::KnownCost) = kc.Hf
-UniformCost() = KnownCost(x -> 1.)
+(nuc::NonUniformCost)(x::AbstractVector) = nuc.f(x)
+gradient(nuc::NonUniformCost) = nuc.∇f
+hessian(nuc::NonUniformCost) = nuc.Hf
+
+struct UniformCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
+    f::F
+    ∇f::DF
+    Hf::HF
+end
+
+function UniformCost(f::Function)
+    ∇f(x) = zeros(length(x))
+    Hf(x) = zeros(length(x), length(x))
+
+    return UniformCost(f, ∇f, Hf)
+end
+UniformCost(n::Real = 1) = UniformCost(x -> n)
+
+(uc::UniformCost)(x::AbstractVector) = uc.f(x)
+gradient(uc::UniformCost) = uc.∇f
+hessian(uc::UniformCost) = uc.Hf
+
+UnitCost() = UniformCost(x -> 1)
+
 
 """
 We can use the mechanics for our GP here to model situations where the cost is unknown
 """
-struct GaussianProcessCost <: UnknownCostFunctions
-    
+struct GaussianProcessCost <: UnknownCostFunction
 end
 
 abstract type AbstractSurrogate end
 abstract type AbstractFantasySurrogate <: AbstractSurrogate end
+abstract type AbstractPerturbationSurrogate <: AbstractSurrogate end
 
 """
 The name flexible surrogate here isn't quite what we should name things. What I mean by flexible surrogate is that
@@ -995,7 +1015,7 @@ function construct_perturbation_matrix(fs::AbstractFantasySurrogate, fantasy_ind
     return δX
 end
 
-mutable struct SpatialPerturbationSurrogate
+mutable struct SpatialPerturbationSurrogate <: AbstractPerturbationSurrogate
     s::FantasySurrogate
     X::AbstractMatrix
     max_fantasized_step::Int
@@ -1053,7 +1073,7 @@ function eval(
     return δsx
 end
 
-mutable struct DataPerturbationSurrogate
+mutable struct DataPerturbationSurrogate <: AbstractPerturbationSurrogate
     s::FantasySurrogate
     X::AbstractMatrix
     max_fantasized_step::Int

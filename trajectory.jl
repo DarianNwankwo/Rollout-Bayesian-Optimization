@@ -3,11 +3,11 @@ include("radial_basis_surrogates.jl")
 using SharedArrays
 
 """
-    Observable
+    AbstractObservable
 
 Abstract type to represent the mechanism for observing values along a trajectory.
 """
-abstract type Observable end
+abstract type AbstractObservable end
 
 """ 
 A mutable struct `StochasticObservable` that represents an observable 
@@ -25,7 +25,7 @@ which produces stochastic observations and their gradients.
 - `StochasticObservable(fs, stdnormal, trajectory_length)`: Creates a new instance of `StochasticObservable` with the given surrogate model, standard normal variables, and trajectory length.
 
 """
-mutable struct StochasticObservable <: Observable
+mutable struct StochasticObservable <: AbstractObservable
     fs::AbstractFantasySurrogate
     stdnormal::AbstractMatrix
     trajectory_length::Int64
@@ -92,7 +92,7 @@ which produces deterministic observations and their gradients.
 - `DeterministicObservable(testfn, trajectory_length)`: Creates a new instance of `DeterministicObservable` with the given test function and trajectory length.
 
 """
-mutable struct DeterministicObservable <: Observable
+mutable struct DeterministicObservable <: AbstractObservable
     f::Function
     ∇f::Function
     trajectory_length::Integer
@@ -144,13 +144,13 @@ function (deo::DeterministicObservable)(x::AbstractVector, θ::AbstractVector)::
 end
 
 """
-    Trajectory
+    AbstractTrajectory
 
 Abstract type defining a trajectory to be simulated given some base policy,
 starting location, horizon and a mechanism for observing sample values along the
 trajectory.
 """
-abstract type Trajectory end
+abstract type AbstractTrajectory end
 
 """
 A mutable struct `ForwardTrajectory` that represents a forward trajectory in the system.
@@ -167,7 +167,7 @@ A mutable struct `ForwardTrajectory` that represents a forward trajectory in the
 # Constructor:
 - `ForwardTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `ForwardTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
-mutable struct ForwardTrajectory <: Trajectory
+mutable struct ForwardTrajectory <: AbstractTrajectory
     s::RBFsurrogate
     fs::FantasyRBFsurrogate
     mfs::MultiOutputFantasyRBFsurrogate
@@ -191,14 +191,14 @@ A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in th
 # Constructor:
 - `AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `AdjointTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
-mutable struct AdjointTrajectory <: Trajectory
+mutable struct AdjointTrajectory <: AbstractTrajectory
     s::AbstractSurrogate
     fs::AbstractFantasySurrogate
     fmin::Real
     x0::AbstractVector
     θ::AbstractVector
     h::Int
-    observable::Union{Missing, Observable}
+    observable::Union{Missing, AbstractObservable}
     cost::AbstractCostFunction
 end
 
@@ -265,7 +265,7 @@ The AdjointTrajectory needs to be created first. The observable expects a mechan
 fantasized samples, which is created once the AdjointTrajectory struct is created. We then
 attach the observable after the fact.
 """
-attach_observable!(AT::AdjointTrajectory, observable::Observable) = AT.observable = observable
+attach_observable!(AT::AdjointTrajectory, observable::AbstractObservable) = AT.observable = observable
 get_observable(T::AdjointTrajectory) = T.observable
 get_starting_point(T::AdjointTrajectory) = T.x0
 get_base_surrogate(T::AdjointTrajectory) = T.s
