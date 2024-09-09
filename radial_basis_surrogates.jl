@@ -1,8 +1,3 @@
-using LinearAlgebra
-
-include("lazy_struct.jl")
-include("radial_basis_functions.jl")
-include("base_policy.jl")
 """
 Here we distinguish between four possible surrogates that can be used in the
 optimization process:

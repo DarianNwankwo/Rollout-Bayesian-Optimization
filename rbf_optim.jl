@@ -1,9 +1,3 @@
-using SharedArrays
-using Distributed
-
-include("radial_basis_surrogates.jl")
-
-
 function ei_solve(s::FantasyRBFsurrogate, lbs::Vector{Float64}, ubs::Vector{Float64}
     , xstart::Vector{Float64})
     fun(x) = -s(x).EI

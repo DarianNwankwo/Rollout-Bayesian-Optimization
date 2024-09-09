@@ -1,25 +1,3 @@
-using Plots
-using Sobol
-using Distributions 
-using LinearAlgebra
-using Optim
-using ForwardDiff
-using Distributed
-using Statistics
-
-
-# Rename to rollout once refactor is complete
-include("lazy_struct.jl")
-include("low_discrepancy.jl")
-include("optim.jl")
-include("radial_basis_surrogates.jl")
-include("radial_basis_functions.jl")
-include("rbf_optim.jl")
-include("trajectory.jl")
-include("utils.jl")
-include("testfns.jl")
-
-
 """
 Where j represents the jth column of all of our observations we want to compute the perturbation of.
 """
