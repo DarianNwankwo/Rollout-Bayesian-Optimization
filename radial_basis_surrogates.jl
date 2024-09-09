@@ -17,8 +17,10 @@ const GROUND_TRUTH_OBSERVATIONS = -1
 # 1. Operations on GP/RBF surrogates
 # ------------------------------------------------------------------
 abstract type AbstractCostFunction end
+abstract type KnownCostFunction <: AbstractCostFunction end
+abstract type UnknownCostFunction <: AbstractCostFunction end
 
-struct KnownCost{F <: Function, DF <: Function, HF <: Function} <: AbstractCostFunction
+struct KnownCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
     f::F
     ∇f::DF
     Hf::HF
@@ -34,21 +36,14 @@ end
 (kc::KnownCost)(x::AbstractVector) = kc.f(x)
 gradient(kc::KnownCost) = kc.∇f
 hessian(kc::KnownCost) = kc.Hf
-
 UniformCost() = KnownCost(x -> 1.)
- 
-struct KnownCost{F <: Function, DF <: Function, HF <: Function} <: AbstractCostFunction
-    f::F
-    ∇f::DF
-    Hf::HF
-end
 
 """
 We can use the mechanics for our GP here to model situations where the cost is unknown
 """
-# struct SurrogateCost
-# end
-
+struct GaussianProcessCost <: UnknownCostFunctions
+    
+end
 
 abstract type AbstractSurrogate end
 abstract type AbstractFantasySurrogate <: AbstractSurrogate end

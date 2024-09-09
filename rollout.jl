@@ -122,35 +122,6 @@ function rollout!(
     return nothing
 end
 
-
-# function adjoint_rollout!(
-#     T::AdjointTrajectory;
-#     lowerbounds::AbstractVector,
-#     upperbounds::AbstractVector,
-#     get_observation::Observable,
-#     xstarts::AbstractMatrix)
-#     # Initial draw at predetermined location not chosen by policy
-#     f0 = get_observation(T.x0)
-
-#     # Update surrogate and cache the gradient of the posterior mean field
-#     update_sfsurrogate!(T.fs, T.x0, f0)
-
-#     # Preallocate for newton solves
-#     xnext = zeros(length(T.x0))
-
-#     # Perform rollout for fantasized trajectories
-#     for j in 1:T.h
-#         # Solve base acquisition function to determine next sample location
-#         xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts, fantasy_index=j-1)
-
-#         # Draw fantasized sample at proposed location after base acquisition solve
-#         fi = get_observation(xnext)
-       
-#         # Update surrogate and cache the gradient of the posterior mean field
-#         update_sfsurrogate!(T.fs, xnext, fi)
-#     end
-# end
-
 function adjoint_rollout!(
     T::AdjointTrajectory;
     lowerbounds::AbstractVector,
@@ -512,11 +483,13 @@ function simulate_adjoint_trajectory(
     end
 end
 
+# function simulate_adjoint_trajectory
 function deterministic_simulate_trajectory(
     s::Surrogate,
     tp::TrajectoryParameters;
     inner_solve_xstarts::AbstractMatrix,
-    testfn::TestFunction,
+    func::Function,
+    grad::Function,
     cost::AbstractCostFunction = UniformCost())
     deepcopy_s = Base.deepcopy(s)
     lowerbounds, upperbounds = get_bounds(tp)
@@ -525,11 +498,11 @@ function deterministic_simulate_trajectory(
     T = AdjointTrajectory(
         base_surrogate=deepcopy_s,
         start=starting_point(tp),
-        horizon=tp.h,
+        horizon=get_horizon(tp),
         cost=cost,
         hypers=hyperparameters(tp)
     )
-    sampler = DeterministicObservable(testfn, max_invocations=tp.h + 1)
+    sampler = DeterministicObservable(func=func, gradient=grad, max_invocations=get_horizon(tp) + 1)
     attach_observable!(T, sampler)
     adjoint_rollout!(T,
         lowerbounds=lowerbounds,
@@ -538,13 +511,12 @@ function deterministic_simulate_trajectory(
         xstarts=inner_solve_xstarts,
     )
 
-    μ = resolve(T)
-    σ = 0.
+    μxθ = resolve(T)
     g_ = gradient(T)
-    ∇μx = g_.∇x
-    ∇μθ = g_.∇θ
+    zsx = zeros(length(get_starting_point(tp)))
+    zsθ = zeros(length(get_hyperparameters(tp)))
 
-    return  μ, σ, ∇μx, ∇μθ
+    return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=0., ∇μx=g_.∇x, σ_∇μx=zsx, ∇μθ=g_.∇θ, σ_∇μθ=zsθ)
 end
 
 
@@ -563,15 +535,15 @@ function simulate_adjoint_trajectory(
         # Rollout trajectory
         T = AdjointTrajectory(
             base_surrogate=deepcopy_s,
-            start=starting_point(tp),
-            hypers=hyperparameters(tp),
-            horizon=tp.h,
+            start=get_starting_point(tp),
+            hypers=get_hyperparameters(tp),
+            horizon=get_horizon(tp),
             cost=cost
         )
         sampler = StochasticObservable(
-            surrogate=T.fs, 
+            surrogate=get_fantasy_surrogate(T), 
             stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
-            max_invocations=tp.h + 1
+            max_invocations=get_horizon(tp) + 1
         )
         attach_observable!(T, sampler)
 
@@ -592,14 +564,16 @@ function simulate_adjoint_trajectory(
         end
     end
 
-    μ = mean(resolutions)
-    σ = std(resolutions, mean=μ)
+    μxθ = Distributions.mean(resolutions)
+    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
     
     if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
-        return μ, σ
+        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
     else
-        ∇μx = mean(spatial_gradients_container, dims=2)
-        ∇μθ = mean(hyperparameter_gradients_container, dims=2)
-        return  μ, σ, ∇μx, ∇μθ
+        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
+        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
+        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
+        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
+        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
     end
 end

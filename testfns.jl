@@ -2,11 +2,11 @@
 # https://en.wikipedia.org/wiki/Test_functions_for_optimization
 
 struct TestFunction
-    dim
-    bounds
-    xopt
-    f
-    ∇f
+    dim::Integer
+    bounds::AbstractMatrix
+    xopt::NTuple{N, AbstractVector{<:Real}} where N
+    f::Function
+    ∇f::Function
 end
 
 (testfn::TestFunction)(x::Vector{Float64}) = testfn.f(x)
@@ -19,7 +19,7 @@ function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
 end
 
 
-function scale(testfn::TestFunction, s::Number)
+function scalar_scale(testfn::TestFunction, s::Number)
     function f(x)
         return testfn.f(x/s)
     end

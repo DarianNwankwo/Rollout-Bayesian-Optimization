@@ -1,10 +1,3 @@
-#----------------------------------------------------
-# TODOS:
-# - Add support for kernel transformations
-#----------------------------------------------------
-# using ForwardDiff
-# using LinearAlgebra
-
 """
     AbstractKernel
 

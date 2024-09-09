@@ -2,9 +2,10 @@ include("radial_basis_surrogates.jl")
 
 using SharedArrays
 
-""" 
-Abstract type `Observable` to represent observables in the system. 
-Subtypes will implement specific types of observables.
+"""
+    Observable
+
+Abstract type to represent the mechanism for observing values along a trajectory.
 """
 abstract type Observable end
 
@@ -92,23 +93,39 @@ which produces deterministic observations and their gradients.
 
 """
 mutable struct DeterministicObservable <: Observable
-    testfn::TestFunction
-    trajectory_length::Int64
-    step::Int64
-    observations::Vector{Float64}
-    gradients::Matrix{Float64}
+    f::Function
+    ∇f::Function
+    trajectory_length::Integer
+    step::Integer
+    observations::AbstractVector{<:Real}
+    gradients::AbstractMatrix{<:Real}
 
-    function DeterministicObservable(t::TestFunction; max_invocations)
+    function DeterministicObservable(; func::Function, gradient::Function, max_invocations::Integer)
         dim = testfn.dim
         observations = zeros(max_invocations)
         gradients = zeros(dim, max_invocations)
-        return new(t, max_invocations, 0, observations, gradients)
+        return new(func, gradient, max_invocations, 0, observations, gradients)
     end
+end
+
+eval(deo::DeterministicObservable) = deo.f
+gradient(deo::DeterministicObservable) = deo.∇f
+
+function update!(deo::DeterministicObservable, y::Real, ∇y::AbstractVector)
+    deo.observations[deo.step] = y
+    deo.gradients[:, deo.step] = ∇y
+end
+
+function increment!(deo::DeterministicObservable)
+    deo.step += 1
+    return nothing
 end
 
 """ 
 Call operator for `DeterministicObservable` which produces an observation 
-and its corresponding gradient for a given input vector `x`.
+and its corresponding gradient for a given input vector `x`. The second argument
+is unused to fit our representation for our evaluating our acquisition function
+in terms of spatial coordinates and hyperparameters.
 
 # Arguments:
 - `x::AbstractVector`: The input vector for which the observation and gradient are generated.
@@ -117,19 +134,21 @@ and its corresponding gradient for a given input vector `x`.
 - `observation`: The generated observation for the input `x`.
 
 """
-function (deo::DeterministicObservable)(x::AbstractVector, _::AbstractVector)::Number
+function (deo::DeterministicObservable)(x::AbstractVector, θ::AbstractVector)::Number
     @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
-    observation, gradient_ = testfn(x), gradient(testfn)(x)
-    deo.step += 1
-    deo.observations[deo.step] = observation
-    deo.gradients[:, deo.step] = gradient_
-
+    observation = eval(deo)(x)
+    gradient_ = gradient(deo)(x)
+    increment!(deo)
+    update!(deo, observation, gradient_)
     return observation
 end
 
 """
-Abstract type `Trajectory` to represent different types of trajectories in the system. 
-Subtypes will implement specific types of trajectories.
+    Trajectory
+
+Abstract type defining a trajectory to be simulated given some base policy,
+starting location, horizon and a mechanism for observing sample values along the
+trajectory.
 """
 abstract type Trajectory end
 
@@ -194,7 +213,7 @@ Constructor for `ForwardTrajectory`.
 # Returns:
 - `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
 """
-function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Int)
+function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
 
@@ -230,7 +249,7 @@ function AdjointTrajectory(;
     base_surrogate::AbstractSurrogate,
     start::AbstractVector,
     hypers::AbstractVector,
-    horizon::Int,
+    horizon::Integer,
     cost::AbstractCostFunction)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
@@ -242,41 +261,19 @@ end
 """
 Attach an observable to an `AdjointTrajectory`.
 
-# Arguments:
-- `AT::AdjointTrajectory`: The adjoint trajectory to which the observable will be attached.
-- `observable::Observable`: The observable to attach.
-
-# Returns:
-- `Observable`: The attached observable.
+The AdjointTrajectory needs to be created first. The observable expects a mechanism for
+fantasized samples, which is created once the AdjointTrajectory struct is created. We then
+attach the observable after the fact.
 """
 attach_observable!(AT::AdjointTrajectory, observable::Observable) = AT.observable = observable
-
-"""
-Get the starting point of the `AdjointTrajectory`.
-
-# Arguments:
-- `T::AdjointTrajectory`: The adjoint trajectory from which to retrieve the starting point.
-
-# Returns:
-- `Vector{Float64}`: The starting point of the trajectory.
-"""
-starting_point(T::AdjointTrajectory) = T.x0
-
-
-"""
-Retrieve the observable associated with an `AdjointTrajectory`.
-
-# Arguments:
-- `T::AdjointTrajectory`: The adjoint trajectory from which to retrieve the observable.
-
-# Returns:
-- `Union{Nothing, Observable}`: The associated observable, or `nothing` if none is attached.
-"""
-function get_observable(T::AdjointTrajectory)
-    return T.observable
-end
-
-get_base_surrogate(T::Trajectory) = T.s
+get_observable(T::AdjointTrajectory) = T.observable
+get_starting_point(T::AdjointTrajectory) = T.x0
+get_base_surrogate(T::AdjointTrajectory) = T.s
+get_fantasy_surrogate(T::AdjointTrajectory) = T.fs
+get_cost_function(T::AdjointTrajectory) = T.cost
+get_hyperparameters(T::AdjointTrajectory) = T.θ
+get_horizon(T::AdjointTrajectory) = T.horizon
+get_minimum(T::AdjointTrajectory) = T.fmin
 
 """
 Consider giving the perturbed surrogate a zero matrix to handle computing variations
@@ -287,45 +284,37 @@ that of the minimum from the best value known from the known locations.
 """
 Base.@kwdef mutable struct TrajectoryParameters
     x0::AbstractVector
-    h::Int
-    mc_iters::Int
-    rnstream_sequence::Array{Float64, 3}
+    horizon::Integer
+    mc_iters::Integer
+    rnstream_sequence::AbstractArray{<:Real, 3}
     lbs::AbstractVector
     ubs::AbstractVector
     θ::AbstractVector
 
-    function TrajectoryParameters(
-        x0::Vector{Float64},
-        h::Int,
-        mc_iters::Int,
-        rnstream::Array{Float64, 3},
-        lbs::Vector{Float64},
-        ubs::Vector{Float64},
-        θ::AbstractVector
-    )
-        function check_dimensions(x0::Vector{Float64}, lbs::Vector{Float64}, ubs::Vector{Float64})
+    function TrajectoryParameters(x0, horizon, mc_iters, rnstream, lbs, ubs, θ)
+        function check_dimensions(x0, lbs, ubs)
             n = length(x0)
             @assert length(lbs) == n && length(ubs) == n "Lower and upper bounds must be the same length as the initial point"
         end
 
-        function check_stream_dimensions(rnstream_sequence::Array{Float64, 3}, d::Int, h::Int, mc_iters::Int)
+        function check_stream_dimensions(rnstream_sequence, dim, horizon, mc_iters)
             n_rows, n_cols = size(rnstream_sequence[1, :, :])
-            @assert n_rows == d + 1 && n_cols <= h + 1 "Random number stream must have d + 1 rows and h + 1 columns for each sample"
+            @assert n_rows == dim + 1 && n_cols <= horizon + 1 "Random number stream must have d + 1 rows and h + 1 columns for each sample"
             @assert size(rnstream_sequence, 1) == mc_iters "Random number stream must have at least mc_iters ($mc_iters) samples"
         end
 
         check_dimensions(x0, lbs, ubs)
-        # check_stream_dimensions(rnstream_sequence, length(x0), h, mc_iters)
+        check_stream_dimensions(rnstream, length(x0), horizon, mc_iters)
     
-        return new(x0, h, mc_iters, rnstream, lbs, ubs, θ)
+        return new(x0, horizon, mc_iters, rnstream, lbs, ubs, θ)
     end
 end
 
-function initialize_trajectory_parameters(;
+function TrajectoryParameters(;
     start::AbstractVector,
     hypers::AbstractVector,
-    horizon::Int,
-    mc_iterations::Int,
+    horizon::Integer,
+    mc_iterations::Integer,
     use_low_discrepancy_sequence::Bool,
     lowerbounds::AbstractVector,
     upperbounds::AbstractVector)
@@ -341,5 +330,34 @@ end
 get_bounds(tp::TrajectoryParameters) = (tp.lbs, tp.ubs)
 each_trajectory(tp::TrajectoryParameters) = 1:tp.mc_iters
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
-starting_point(tp::TrajectoryParameters) = tp.x0
-hyperparameters(tp::TrajectoryParameters) = tp.θ
+get_starting_point(tp::TrajectoryParameters) = tp.x0
+get_hyperparameters(tp::TrajectoryParameters) = tp.θ
+get_horizon(tp::TrajectoryParameters) = tp.horizon
+
+
+"""
+A convenient wrapper for the expected outcome of simulating a full trajectory.
+"""
+struct ExpectedTrajectoryOutput
+    μxθ::Real
+    σ_μxθ::Real
+    ∇μx::Union{AbstractVector{<:Real}, Nothing}
+    σ_∇μx::Union{AbstractVector{<:Real}, Nothing}
+    ∇μθ::Union{AbstractVector{<:Real}, Nothing}
+    σ_∇μθ::Union{AbstractVector{<:Real}, Nothing}
+end
+
+function ExpectedTrajectoryOutput(;
+    μxθ,
+    σ_μxθ,
+    ∇μx=nothing,
+    σ_∇μx=nothing,
+    ∇μθ=nothing,
+    σ_∇μθ=nothing)
+    return ExpectedTrajectoryOutput(μxθ, σ_μxθ, ∇μx, σ_∇μx, ∇μθ, σ_∇μθ)
+end
+
+mean(eto::ExpectedTrajectoryOutput) = eto.μxθ
+Distributions.std(eto::ExpectedTrajectoryOutput) = eto.σ_μxθ
+gradient(eto::ExpectedTrajectoryOutput; wrt_hypers::Bool = false) = wrt_hypers ? eto.∇μθ : eto.∇μx
+std_gradient(eto::ExpectedTrajectoryOutput; wrt_hypers::Bool = false) = wrt_hypers ? eto.σ_∇μθ : eto.σ_∇μx
