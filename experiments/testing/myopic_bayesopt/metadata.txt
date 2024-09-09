@@ -1,5 +1,0 @@
-Budget: 15
-Number of Trials: 5
-Number of Starts: 8
-Data Directory: testing
-Should Optimize: true
