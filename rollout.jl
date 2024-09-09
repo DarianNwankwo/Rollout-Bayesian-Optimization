@@ -497,10 +497,10 @@ function deterministic_simulate_trajectory(
     # Rollout trajectory
     T = AdjointTrajectory(
         base_surrogate=deepcopy_s,
-        start=starting_point(tp),
+        start=get_starting_point(tp),
         horizon=get_horizon(tp),
         cost=cost,
-        hypers=hyperparameters(tp)
+        hypers=get_hyperparameters(tp)
     )
     sampler = DeterministicObservable(func=func, gradient=grad, max_invocations=get_horizon(tp) + 1)
     attach_observable!(T, sampler)
