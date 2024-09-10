@@ -1,7 +1,3 @@
-include("radial_basis_surrogates.jl")
-
-using SharedArrays
-
 """
     AbstractObservable
 
@@ -9,6 +5,15 @@ Abstract type to represent the mechanism for observing values along a trajectory
 """
 abstract type AbstractObservable end
 
+function update!(o::AbstractObservable, y::Real, ∇y::AbstractVector)
+    o.observations[o.step] = y
+    o.gradients[:, o.step] = ∇y
+end
+
+function increment!(o::AbstractObservable)
+    o.step += 1
+    return nothing
+end
 """ 
 A mutable struct `StochasticObservable` that represents an observable 
 which produces stochastic observations and their gradients.
@@ -28,10 +33,10 @@ which produces stochastic observations and their gradients.
 mutable struct StochasticObservable <: AbstractObservable
     fs::AbstractFantasySurrogate
     stdnormal::AbstractMatrix
-    trajectory_length::Int64
-    step::Int64
-    observations::Vector{Float64}
-    gradients::Matrix{Float64}
+    trajectory_length::Integer
+    step::Integer
+    observations::AbstractVector{<:Real}
+    gradients::AbstractMatrix{<:Real}
 
     function StochasticObservable(; surrogate, stdnormal, max_invocations)
         dim = size(stdnormal, 1) - 1
@@ -53,26 +58,13 @@ its corresponding gradient for a given input vector `x`.
 - `observation`: The generated observation for the input `x`.
 
 """
-function (so::StochasticObservable)(x::AbstractVector)::Number
-    @assert so.step < so.trajectory_length "Maximum invocations have been used"
-    observation, gradient_... = gp_draw(
-        so.fs, x, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
-    )
-    so.step += 1
-    so.observations[so.step] = observation
-    so.gradients[:, so.step] = gradient_
-
-    return observation
-end
-
 function (so::StochasticObservable)(x::AbstractVector, θ::AbstractVector)::Number
     @assert so.step < so.trajectory_length "Maximum invocations have been used"
     observation, gradient_... = gp_draw(
         so.fs, x, θ, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
     )
-    so.step += 1
-    so.observations[so.step] = observation
-    so.gradients[:, so.step] = gradient_
+    increment!(so)
+    update!(so, observation, gradient_)
 
     return observation
 end
@@ -108,18 +100,8 @@ mutable struct DeterministicObservable <: AbstractObservable
     end
 end
 
-eval(deo::DeterministicObservable) = deo.f
-gradient(deo::DeterministicObservable) = deo.∇f
-
-function update!(deo::DeterministicObservable, y::Real, ∇y::AbstractVector)
-    deo.observations[deo.step] = y
-    deo.gradients[:, deo.step] = ∇y
-end
-
-function increment!(deo::DeterministicObservable)
-    deo.step += 1
-    return nothing
-end
+eval(o::DeterministicObservable) = o.f
+gradient(o::DeterministicObservable) = o.∇f
 
 """ 
 Call operator for `DeterministicObservable` which produces an observation 
