@@ -265,7 +265,7 @@ function stochastic_gradient_ascent_adam1(;
         # μx, ∇μx, μx_stderr, ∇μx_stderr = distributed_simulate_trajectory(sur, tp, xstarts; variance_reduction=varred)
 
         # Update position and moment estimates
-        tp.x0 .= update_x_adam!(tp.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tp.lbs, ubs=tp.ubs)
+        tp.x0 .= update_x_adam!(tp.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tp.spatial_lbs, ubs=tp.spatial_ubs)
         xfinish .= tp.x0
         push!(xall, tp.x0)
         push!(rewards, μx)

@@ -1,131 +1,4 @@
 """
-    AbstractObservable
-
-Abstract type to represent the mechanism for observing values along a trajectory.
-"""
-abstract type AbstractObservable end
-
-function update!(o::AbstractObservable, y::Real, ∇y::AbstractVector)
-    o.observations[o.step] = y
-    o.gradients[:, o.step] = ∇y
-end
-
-function increment!(o::AbstractObservable)
-    o.step += 1
-    return nothing
-end
-""" 
-A mutable struct `StochasticObservable` that represents an observable 
-which produces stochastic observations and their gradients.
-    
-# Fields:
-- `fs::SmartFantasyRBFsurrogate`: The surrogate model used to generate observations.
-- `stdnormal::AbstractMatrix`: A matrix of standard normal variables used for generating the stochastic observations.
-- `trajectory_length::Int64`: The maximum number of steps (or invocations) allowed.
-- `step::Int64`: The current step or invocation count.
-- `observations::Vector{Float64}`: A vector to store the observations generated.
-- `gradients::Matrix{Float64}`: A matrix to store the gradients corresponding to the observations.
-
-# Constructor:
-- `StochasticObservable(fs, stdnormal, trajectory_length)`: Creates a new instance of `StochasticObservable` with the given surrogate model, standard normal variables, and trajectory length.
-
-"""
-mutable struct StochasticObservable <: AbstractObservable
-    fs::AbstractFantasySurrogate
-    stdnormal::AbstractMatrix
-    trajectory_length::Integer
-    step::Integer
-    observations::AbstractVector{<:Real}
-    gradients::AbstractMatrix{<:Real}
-
-    function StochasticObservable(; surrogate, stdnormal, max_invocations)
-        dim = size(stdnormal, 1) - 1
-        invocations = size(stdnormal, 2)
-        observations = zeros(invocations)
-        gradients = zeros(dim, invocations)
-        return new(surrogate, stdnormal, max_invocations, 0, observations, gradients)
-    end
-end
-
-""" 
-Call operator for `StochasticObservable` which produces an observation and 
-its corresponding gradient for a given input vector `x`.
-    
-# Arguments:
-- `x::AbstractVector`: The input vector for which the observation and gradient are generated.
-
-# Returns:
-- `observation`: The generated observation for the input `x`.
-
-"""
-function (so::StochasticObservable)(x::AbstractVector, θ::AbstractVector)::Number
-    @assert so.step < so.trajectory_length "Maximum invocations have been used"
-    observation, gradient_... = gp_draw(
-        so.fs, x, θ, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
-    )
-    increment!(so)
-    update!(so, observation, gradient_)
-
-    return observation
-end
-
-""" 
-A mutable struct `DeterministicObservable` that represents an observable 
-which produces deterministic observations and their gradients.
-
-# Fields:
-- `testfn::TestFunction`: The test function used to generate observations.
-- `trajectory_length::Int64`: The maximum number of steps (or invocations) allowed.
-- `step::Int64`: The current step or invocation count.
-- `observations::Vector{Float64}`: A vector to store the observations generated.
-- `gradients::Matrix{Float64}`: A matrix to store the gradients corresponding to the observations.
-
-# Constructor:
-- `DeterministicObservable(testfn, trajectory_length)`: Creates a new instance of `DeterministicObservable` with the given test function and trajectory length.
-
-"""
-mutable struct DeterministicObservable <: AbstractObservable
-    f::Function
-    ∇f::Function
-    trajectory_length::Integer
-    step::Integer
-    observations::AbstractVector{<:Real}
-    gradients::AbstractMatrix{<:Real}
-
-    function DeterministicObservable(; func::Function, gradient::Function, max_invocations::Integer)
-        dim = testfn.dim
-        observations = zeros(max_invocations)
-        gradients = zeros(dim, max_invocations)
-        return new(func, gradient, max_invocations, 0, observations, gradients)
-    end
-end
-
-eval(o::DeterministicObservable) = o.f
-gradient(o::DeterministicObservable) = o.∇f
-
-""" 
-Call operator for `DeterministicObservable` which produces an observation 
-and its corresponding gradient for a given input vector `x`. The second argument
-is unused to fit our representation for our evaluating our acquisition function
-in terms of spatial coordinates and hyperparameters.
-
-# Arguments:
-- `x::AbstractVector`: The input vector for which the observation and gradient are generated.
-
-# Returns:
-- `observation`: The generated observation for the input `x`.
-
-"""
-function (deo::DeterministicObservable)(x::AbstractVector, θ::AbstractVector)::Number
-    @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
-    observation = eval(deo)(x)
-    gradient_ = gradient(deo)(x)
-    increment!(deo)
-    update!(deo, observation, gradient_)
-    return observation
-end
-
-"""
     AbstractTrajectory
 
 Abstract type defining a trajectory to be simulated given some base policy,
@@ -153,10 +26,10 @@ mutable struct ForwardTrajectory <: AbstractTrajectory
     s::RBFsurrogate
     fs::FantasyRBFsurrogate
     mfs::MultiOutputFantasyRBFsurrogate
-    jacobians::Vector{Matrix{Float64}}
-    fmin::Float64
-    x0::Vector{Float64}
-    h::Int
+    jacobians::Vector{AbstractMatrix{<:Real}}
+    fmin::Real
+    x0::AbstractVector
+    h::Integer
 end
 
 """
@@ -179,7 +52,7 @@ mutable struct AdjointTrajectory <: AbstractTrajectory
     fmin::Real
     x0::AbstractVector
     θ::AbstractVector
-    h::Int
+    h::Integer
     observable::Union{Missing, AbstractObservable}
     cost::AbstractCostFunction
 end
@@ -269,11 +142,13 @@ Base.@kwdef mutable struct TrajectoryParameters
     horizon::Integer
     mc_iters::Integer
     rnstream_sequence::AbstractArray{<:Real, 3}
-    lbs::AbstractVector
-    ubs::AbstractVector
+    spatial_lbs::AbstractVector
+    spatial_ubs::AbstractVector
+    hyperparameters_lbs::AbstractVector
+    hyperparameters_ubs::AbstractVector
     θ::AbstractVector
 
-    function TrajectoryParameters(x0, horizon, mc_iters, rnstream, lbs, ubs, θ)
+    function TrajectoryParameters(x0, horizon, mc_iters, rnstream, slbs, subs, hlbs, hubs, θ)
         function check_dimensions(x0, lbs, ubs)
             n = length(x0)
             @assert length(lbs) == n && length(ubs) == n "Lower and upper bounds must be the same length as the initial point"
@@ -285,10 +160,11 @@ Base.@kwdef mutable struct TrajectoryParameters
             @assert size(rnstream_sequence, 1) == mc_iters "Random number stream must have at least mc_iters ($mc_iters) samples"
         end
 
-        check_dimensions(x0, lbs, ubs)
+        check_dimensions(x0, slbs, subs)
+        check_dimensions(θ, hlbs, hubs)
         check_stream_dimensions(rnstream, length(x0), horizon, mc_iters)
     
-        return new(x0, horizon, mc_iters, rnstream, lbs, ubs, θ)
+        return new(x0, horizon, mc_iters, rnstream, slbs, subs, hlbs, hubs, θ)
     end
 end
 
@@ -298,18 +174,31 @@ function TrajectoryParameters(;
     horizon::Integer,
     mc_iterations::Integer,
     use_low_discrepancy_sequence::Bool,
-    lowerbounds::AbstractVector,
-    upperbounds::AbstractVector)
+    spatial_lowerbounds::AbstractVector,
+    spatial_upperbounds::AbstractVector,
+    hyperparameters_lowerbounds::AbstractVector,
+    hyperparameters_upperbounds::AbstractVector)
     if use_low_discrepancy_sequence
-        rns = gen_low_discrepancy_sequence(mc_iterations, length(lowerbounds), horizon + 1)
+        rns = gen_low_discrepancy_sequence(mc_iterations, length(spatial_lowerbounds), horizon + 1)
     else
-        rns = randn(mc_iterations, length(lowerbounds) + 1, horizon + 1)
+        rns = randn(mc_iterations, length(spatial_lowerbounds) + 1, horizon + 1)
     end
 
-    return TrajectoryParameters(start, horizon, mc_iterations, rns, lowerbounds, upperbounds, hypers)
+    return TrajectoryParameters(
+        start,
+        horizon,
+        mc_iterations,
+        rns,
+        spatial_lowerbounds,
+        spatial_upperbounds,
+        hyperparameters_lowerbounds,
+        hyperparameters_upperbounds,
+        hypers
+    )
 end
 
-get_bounds(tp::TrajectoryParameters) = (tp.lbs, tp.ubs)
+get_spatial_bounds(tp::TrajectoryParameters) = (tp.spatial_lbs, tp.spatial_ubs)
+get_hyperparameter_bounds(tp::TrajectoryParameters) = (tp.hyperparameters_lbs, tp.hyperparameters_ubs)
 each_trajectory(tp::TrajectoryParameters) = 1:tp.mc_iters
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
 get_starting_point(tp::TrajectoryParameters) = tp.x0

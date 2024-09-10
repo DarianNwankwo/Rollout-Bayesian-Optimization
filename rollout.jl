@@ -102,28 +102,43 @@ end
 
 function adjoint_rollout!(
     T::AdjointTrajectory;
-    lowerbounds::AbstractVector,
-    upperbounds::AbstractVector,
+    spatial_lbs::AbstractVector,
+    spatial_ubs::AbstractVector,
+    hyperparameters_lbs::AbstractVector,
+    hyperparameters_ubs::AbstractVector,
     get_observation::AbstractObservable,
-    xstarts::AbstractMatrix)
+    xstarts::AbstractMatrix,
+    θstarts::AbstractMatrix)
     # Initial draw at predetermined location not chosen by policy
     f0 = get_observation(T.x0, T.θ)
 
     # Update surrogate and cache the gradient of the posterior mean field
+    # TODO: update!(T, x0, f0, θ0) -- so we can keep track of hyperparameters sampled
     condition!(T.fs, T.x0, f0)
 
     # Preallocate for newton solves
-    xnext = zeros(length(T.x0))
+    xlen, θlen = length(get_starting_point(T)), length(get_hyperparameters(T))
+    xθnext = zeros(xlen + θlen)
 
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_base_solve(
-            T.fs, lowerbounds, upperbounds, xstarts, T.θ, fantasy_index=j-1, cost=T.cost
+        xθnext .= multistart_base_solve(
+            get_fantasy_surrogate(T),
+            spatial_lbs=spatial_lbs,
+            spatial_ubs=spatial_ubs,
+            hyperparameters_lbs=hyperparameters_lbs,
+            hyperparameters_ubs=hyperparameters_ubs,
+            xstarts=xstarts,
+            θstarts=θstarts,
+            fantasy_index=j-1,
+            cost=T.cost
         )
+        xnext = xθnext[1:xlen]
+        θnext = xθnext[xlen+1:end]
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi = get_observation(xnext, T.θ)
+        fi = get_observation(xnext, θnext)
        
         # Update surrogate and cache the gradient of the posterior mean field
         condition!(T.fs, xnext, fi)
@@ -309,11 +324,21 @@ function gradient(T::AdjointTrajectory)
     # Case #1: Nothing along the trajectory was found to be better than what has been observed
     if fmini <= fb return (∇x=zeros(xdim), ∇θ=zeros(θdim)) end
 
+    # TODO: This should probably be a function that dispatches to grab the correct gradient based on the
+    # type of observable
     # Case #2: The initial sample was the best step along the trajectory
     if t == 0
-        # We should replace the sampled gradient below with the gradient of the mean field
-        ∇x = convert(Vector, -T.observable.gradients[:, t+1])
-        return (∇x=∇x, ∇θ=zeros(θdim))
+        if T.observable isa DeterministicObservable
+            ∇x = convert(Vector, -T.observable.gradients[:, t+1])
+            return (∇x=∇x, ∇θ=zeros(θdim))
+        elseif T.observable isa StochasticObservable
+            # The final gradient depends linearly on the function gradients
+            # so we replace the random variables with their expectations
+            sx = recover_policy_solve(T, solve_index=0)
+            return (∇x=sx.∇μ, ∇θ=zeros(θdim))
+        else
+            error("Unsupported observable type")
+        end
     end
     
     # Case #3: The best step along the trajectory was at a non-trivial step (>= 1)
@@ -350,7 +375,7 @@ function simulate_forward_trajectory(
     resolutions::Vector{Float64},
     gradient_resolutions::Matrix{Float64})
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_bounds(tp)
+    lowerbounds, upperbounds = get_spatial_bounds(tp)
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
@@ -384,7 +409,7 @@ function deterministic_simulate_trajectory(
     resolutions::AbstractVector,
     gradient_resolutions::Union{Nothing, AbstractMatrix} = nothing)
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_bounds(tp)
+    lowerbounds, upperbounds = get_spatial_bounds(tp)
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
@@ -423,7 +448,7 @@ function simulate_adjoint_trajectory(
     resolutions::AbstractVector,
     gradient_resolutions::Union{Nothing, AbstractMatrix} = nothing)
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_bounds(tp)
+    lowerbounds, upperbounds = get_spatial_bounds(tp)
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
@@ -466,11 +491,13 @@ function deterministic_simulate_trajectory(
     s::Surrogate,
     tp::TrajectoryParameters;
     inner_solve_xstarts::AbstractMatrix,
+    inner_solve_θstarts::AbstractMatrix,
     func::Function,
     grad::Function,
     cost::AbstractCostFunction = UniformCost())
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_bounds(tp)
+    slbs, subs = get_spatial_bounds(tp)
+    hlbs, hubs = get_hyperparameter_bounds(tp)
 
     # Rollout trajectory
     T = AdjointTrajectory(
@@ -483,10 +510,13 @@ function deterministic_simulate_trajectory(
     sampler = DeterministicObservable(func=func, gradient=grad, max_invocations=get_horizon(tp) + 1)
     attach_observable!(T, sampler)
     adjoint_rollout!(T,
-        lowerbounds=lowerbounds,
-        upperbounds=upperbounds,
+        spatial_lbs=slbs,
+        spatial_ubs=subs,
+        hyperparameters_lbs=hlbs,
+        hyperparameters_ubs=hubs,
         get_observation=get_observable(T),
         xstarts=inner_solve_xstarts,
+        θstarts=inner_solve_θstarts
     )
 
     μxθ = resolve(T)
@@ -507,7 +537,7 @@ function simulate_adjoint_trajectory(
     hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
     cost::AbstractCostFunction = UniformCost())
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_bounds(tp)
+    lowerbounds, upperbounds = get_spatial_bounds(tp)
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory

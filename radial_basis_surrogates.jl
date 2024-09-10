@@ -11,54 +11,6 @@ const GROUND_TRUTH_OBSERVATIONS = -1
 # ------------------------------------------------------------------
 # 1. Operations on GP/RBF surrogates
 # ------------------------------------------------------------------
-abstract type AbstractCostFunction end
-abstract type KnownCostFunction <: AbstractCostFunction end
-abstract type UnknownCostFunction <: AbstractCostFunction end
-
-struct NonUniformCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
-    f::F
-    ∇f::DF
-    Hf::HF
-end
-
-function NonUniformCost(f::Function)
-    ∇f(x) = ForwardDiff.gradient(x -> f(x), x)
-    Hf(x) = ForwardDiff.hessian(x -> f(x), x)
-
-    return NonUniformCost(f, ∇f, Hf)
-end
-
-(nuc::NonUniformCost)(x::AbstractVector) = nuc.f(x)
-gradient(nuc::NonUniformCost) = nuc.∇f
-hessian(nuc::NonUniformCost) = nuc.Hf
-
-struct UniformCost{F <: Function, DF <: Function, HF <: Function} <: KnownCostFunction
-    f::F
-    ∇f::DF
-    Hf::HF
-end
-
-function UniformCost(f::Function)
-    ∇f(x) = zeros(length(x))
-    Hf(x) = zeros(length(x), length(x))
-
-    return UniformCost(f, ∇f, Hf)
-end
-UniformCost(n::Real = 1) = UniformCost(x -> n)
-
-(uc::UniformCost)(x::AbstractVector) = uc.f(x)
-gradient(uc::UniformCost) = uc.∇f
-hessian(uc::UniformCost) = uc.Hf
-
-UnitCost() = UniformCost(x -> 1)
-
-
-"""
-We can use the mechanics for our GP here to model situations where the cost is unknown
-"""
-struct GaussianProcessCost <: UnknownCostFunction
-end
-
 abstract type AbstractSurrogate end
 abstract type AbstractFantasySurrogate <: AbstractSurrogate end
 abstract type AbstractPerturbationSurrogate <: AbstractSurrogate end
@@ -78,19 +30,18 @@ struct Surrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: 
     g::P
 end
 
-# TODO: Policy here should be a named parameter to emphasize the strict dependence.
-# TODO: Provide a constructor for instantiation this policy object if a function is only specified
+
 function Surrogate(
     ψ::RadialBasisFunction,
     X::AbstractMatrix,
-    y::AbstractVector,
-    g::AbstractPolicy;
+    y::AbstractVector;
+    base_policy::AbstractPolicy = EI(),
     σn2::Number = 1e-6)
     d, N = size(X)
     K = eval_KXX(ψ, X, σn2=σn2)
     L = cholesky(Hermitian(K)).L
     c = L'\(L\y)
-    return Surrogate(ψ, X, K, L, y, c, σn2, g)
+    return Surrogate(ψ, X, K, L, y, c, σn2, base_policy)
 end
 
 function condition(s::Surrogate, xnew::AbstractVector, ynew::Real)
@@ -187,17 +138,23 @@ function eval(
     sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
     sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
 
+    sx.d2g_dμdθ = () -> mixed_partial(sx.s.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dσdθ = () -> mixed_partial(sx.s.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
+
     sx.cx = () -> sx.c(x)
     sx.∇cx = () -> gradient(sx.c)(x)
     sx.Hcx = () -> hessian(sx.c)(x)
 
-    sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx) * sx.cx
-    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αxθ * sx.∇cx
-    sx.Hαx = () -> (sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ) * sx.cx +
-                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αxθ*sx.Hcx
+    sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx)
+    sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
+    sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
     
-    sx.∇αθ = () -> sx.dg_dθ * sx.cx
-    sx.Hαθ = () -> sx.d2g_dθ * sx.cx
+    sx.∇αθ = () -> sx.dg_dθ
+    sx.Hαθ = () -> sx.d2g_dθ
+
+    sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
+    sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
+    sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
 
     return sx
 end
@@ -207,6 +164,7 @@ end
 eval(sx) = sx.αxθ
 gradient(sx; wrt_hypers=false) = wrt_hypers ? sx.∇αθ : sx.∇αx
 hessian(sx; wrt_hypers=false) = wrt_hypers ? sx.Hαθ : sx.Hαx
+mixed_partials(sx) = sx.Hαxθ
 
 mutable struct FantasySurrogate{
         T1<:AbstractVector{Float64},
@@ -351,17 +309,27 @@ function eval(
     sx.d2g_dσ = () -> second_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
     sx.d2g_dθ = () -> second_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
 
+    sx.d2g_dμdθ = () -> mixed_partial(sx.fs.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
+    sx.d2g_dσdθ = () -> mixed_partial(sx.fs.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
+
     sx.cx = () -> sx.c(x)
     sx.∇cx = () -> gradient(sx.c)(x)
     sx.Hcx = () -> hessian(sx.c)(x)
 
-    sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx) * sx.cx
-    sx.∇αx = () -> (sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ) * sx.cx + sx.αxθ * sx.∇cx
-    sx.Hαx = () -> (sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ) * sx.cx +
-                    sx.∇αx*sx.∇cx' + sx.∇cx*sx.∇αx' + sx.αxθ*sx.Hcx
+    sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx)
+
+    # Spatial gradients
+    sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
+    sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
     
-    sx.∇αθ = () -> sx.dg_dθ * sx.cx
-    sx.Hαθ = () -> sx.d2g_dθ * sx.cx
+    # Hyperparameter gradients
+    sx.∇αθ = () -> sx.dg_dθ
+    sx.Hαθ = () -> sx.d2g_dθ
+
+    # Mixed partials
+    sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
+    sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
+    sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
 
     return sx
 end
@@ -1061,9 +1029,8 @@ function eval(
     # Write logic for perturbed acquisition. Cost function is attached to sx
     δsx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(δsx.μ, δsx.σ, sx.θ, sx)
     δsx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(δsx.μ, δsx.σ, sx.θ, sx)
-    δsx.δμσ = () -> (sx.dg_dμ*δsx.μ + sx.dg_dσ*δsx.σ)
-    δsx.αxθ = () -> δsx.δμσ * sx.cx
-    δsx.∇αx = () -> δsx.δμσ*sx.∇cx + (sx.dg_dμ*δsx.∇μ + sx.dg_dσ*δsx.∇σ + δsx.dg_dμ*sx.∇μ + δsx.dg_dσ*sx.∇σ)*sx.cx
+    δsx.αxθ = () -> sx.dg_dμ*δsx.μ + sx.dg_dσ*δsx.σ
+    δsx.∇αx = () -> sx.dg_dμ*δsx.∇μ + sx.dg_dσ*δsx.∇σ + δsx.dg_dμ*sx.∇μ + δsx.dg_dσ*sx.∇σ
 
     return δsx
 end
