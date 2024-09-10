@@ -6,6 +6,7 @@ using Optim
 using ForwardDiff
 using Distributed
 using Statistics
+using SharedArrays
 
 
 include("testfns.jl")
