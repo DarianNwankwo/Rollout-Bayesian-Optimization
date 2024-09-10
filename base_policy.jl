@@ -1,40 +1,31 @@
-using ForwardDiff
+abstract type AbstractPolicy end
 
-abstract type Policy end
-
-"""TODO:
-The idea here is to get an arbitrary function from the user in terms of μ, σ, and θ
-and store all the derivatives we care about. If the user doesn't provide these things,
-we compute them via automatic differentiation for them.
-"""
-struct BasePolicy <: Policy
-    g::Function             # The function g(μ, σ, θ)
-    dg_dμ::Function         # Gradient of g with respect to μ
-    d2g_dμ::Function        # Hessian of g with respect to μ
-    dg_dσ::Function         # Gradient of g with respect to σ
-    d2g_dσ::Function        # Hessian of g with respect to σ
-    dg_dθ::Function         # Gradient of g with respect to θ
-    d2g_dθ::Function         # Hessian of g with respect to θ
-
-    BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ) = new(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ)
+struct BasePolicy{F<:Function, DFμ<:Function, HFμ<:Function, DFσ<:Function, HFσ<:Function, DFθ<:Function, HFθ<:Function} <: AbstractPolicy
+    g::F             # The function g(μ, σ, θ)
+    dg_dμ::DFμ       # Gradient of g with respect to μ
+    d2g_dμ::HFμ      # Hessian of g with respect to μ
+    dg_dσ::DFσ       # Gradient of g with respect to σ
+    d2g_dσ::HFσ      # Hessian of g with respect to σ
+    dg_dθ::DFθ       # Gradient of g with respect to θ
+    d2g_dθ::HFθ      # Hessian of g with respect to θ
+    name::String
 end
 
+function BasePolicy(g::Function, name::String)
+    dg_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> g(μ, σ, θ, sx), μ)
+    d2g_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> dg_dμ(μ, σ, θ, sx), μ)
+    dg_dσ(μ, σ, θ, sx) = ForwardDiff.derivative(σ -> g(μ, σ, θ, sx), σ)
+    d2g_dσ(μ, σ, θ, sx) = ForwardDiff.derivative(σ -> dg_dσ(μ, σ, θ, sx), σ)
+    dg_dθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> g(μ, σ, θ, sx), θ)
+    d2g_dθ(μ, σ, θ, sx) = ForwardDiff.hessian(θ -> g(μ, σ, θ, sx), θ)
 
-function BasePolicy(g::Function)
-    dg_dμ(μ, σ, θ) = ForwardDiff.derivative(μ -> g(μ, σ, θ), μ)
-    d2g_dμ(μ, σ, θ) = ForwardDiff.derivative(μ -> dg_dμ(μ, σ, θ), μ)
-    dg_dσ(μ, σ, θ) = ForwardDiff.derivative(σ -> g(μ, σ, θ), σ)
-    d2g_dσ(μ, σ, θ) = ForwardDiff.derivative(σ -> dg_dμ(μ, σ, θ), σ)
-    dg_dθ(μ, σ, θ) = ForwardDiff.gradient(θ -> g(μ, σ, θ), θ)
-    d2g_dθ(μ, σ, θ) = ForwardDiff.hessian(θ -> dg_dμ(μ, σ, θ), θ)
-
-    return BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ)
+    return BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ, name)
 end
 
-(bp::BasePolicy)(μ::Number, σ::Number, θ::AbstractVector) = bp.g(μ, σ, θ)
+(bp::BasePolicy)(μ::Number, σ::Number, θ::AbstractVector, sx) = bp.g(μ, σ, θ, sx)
 
 
-function first_partial(p::Policy; symbol::Symbol)
+function first_partial(p::AbstractPolicy; symbol::Symbol)
     if symbol == :μ
         return p.dg_dμ
     elseif symbol == :σ
@@ -45,13 +36,13 @@ function first_partial(p::Policy; symbol::Symbol)
         error("Unknown symbol. Use :μ, :σ, or :θ")
     end
 end
-first_partials(p::Policy) = (
+first_partials(p::AbstractPolicy) = (
     μ=first_partial(p, symbol=:μ),
     σ=first_partial(p, symbol=:σ),
     θ=first_partial(p, symbol=:θ)
 )
 
-function second_partial(p::Policy; symbol::Symbol)
+function second_partial(p::AbstractPolicy; symbol::Symbol)
     if symbol == :μ
         return p.d2g_dμ
     elseif symbol == :σ
@@ -62,8 +53,57 @@ function second_partial(p::Policy; symbol::Symbol)
         error("Unknown symbol. Use :μ, :σ, or :θ")
     end
 end
-second_partials(p::Policy) = (
+second_partials(p::AbstractPolicy) = (
     μ=second_partial(p, symbol=:μ),
     σ=second_partial(p, symbol=:σ),
     θ=second_partial(p, symbol=:θ)
 )
+
+# Some Common Acquisition Functions
+function EI(; σtol=1e-8)
+    # TODO: Create a lazy evaluation version of this function. I want to return ei(μ, σ, θ, minimum(y))
+    function ei(μ, σ, θ, sx)
+        if σ < σtol
+            return 0.
+        end
+        fmini = minimum(sx.y)
+        improvement = fmini - μ - θ[1]
+        z = improvement / σ
+        standard_normal = Distributions.Normal(0, 1)
+        
+        expected_improvement = improvement*Distributions.cdf(standard_normal, z) + σ*Distributions.pdf(standard_normal, z)
+        return expected_improvement
+    end
+
+    return BasePolicy(ei, "Expected Improvement")
+end
+
+
+function POI(; σtol=1e-8)
+    function poi(μ, σ, θ, sx)
+        if σ < σtol
+            return 0.0
+        end
+        fmini = minimum(sx.y)
+        improvement = fmini - μ - θ[1]
+        z = improvement / σ
+        standard_normal = Distributions.Normal(0, 1)
+
+        probability_improvement = Distributions.cdf(standard_normal, z)
+        return probability_improvement
+    end
+
+    return BasePolicy(poi, "Probability of Improvement")
+end
+
+function UCB()
+    function ucb(μ, σ, θ, sx)
+        return μ + θ[1] * σ
+    end
+
+    return BasePolicy(ucb, "Upper Confidence Bound")
+end
+
+
+# Custom string method for BasePolicy
+Base.string(bp::AbstractPolicy) = bp.name

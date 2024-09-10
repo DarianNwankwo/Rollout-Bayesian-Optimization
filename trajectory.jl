@@ -250,7 +250,7 @@ function AdjointTrajectory(;
     start::AbstractVector,
     hypers::AbstractVector,
     horizon::Integer,
-    cost::AbstractCostFunction)
+    cost::AbstractCostFunction = UniformCost())
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
     fsur = FantasySurrogate(base_surrogate, horizon)
@@ -333,6 +333,7 @@ get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_seque
 get_starting_point(tp::TrajectoryParameters) = tp.x0
 get_hyperparameters(tp::TrajectoryParameters) = tp.θ
 get_horizon(tp::TrajectoryParameters) = tp.horizon
+set_starting_point!(tp::TrajectoryParameters, x::AbstractVector) = tp.x0[:] = x
 
 
 """

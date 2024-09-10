@@ -294,6 +294,9 @@ function stochastic_gradient_ascent_adam1(;
     return result
 end
 
+"""
+Early Stopping without a Validation Set: `https://arxiv.org/abs/1703.09580`
+"""
 function eswavs(;∇f, ∇f_Σ, sample_size)
     D = length(∇f)
     m = sample_size
@@ -345,60 +348,6 @@ function stochastic_gradient_ascent_adam2(;
 end
 
 
-function stochastic_gradient_ascent_adam(;
-    λ=0.01, β1=0.9, β2=0.999, ϵ=1e-8, ftol=1e-6, gtol=1e-6, varred=true,
-    sur::RBFsurrogate, tp::TrajectoryParameters, max_sgd_iters::Int, xstarts::Matrix{Float64},
-    candidate_locations::SharedMatrix{Float64}, candidate_values::SharedArray{Float64},
-    αxs::SharedArray{Float64}, ∇αxs::SharedMatrix{Float64}
-    )
-    x0 = tp.x0
-    m = [zeros(size(x0))]
-    v = [zeros(size(x0))]
-    xstart = x0
-    xfinish = x0
-    xall = [x0]
-
-    rewards, rewards_grads = [], []
-    iters = 1
-
-    for epoch in 1:max_sgd_iters
-        iters = epoch
-
-        # Compute stochastic estimates of function and gradient
-        μx, ∇μx, μx_stderr, ∇μx_stderr = distributed_simulate_trajectory(
-            sur, tp, xstarts; variance_reduction=varred,
-            candidate_locations=candidate_locations, candidate_values=candidate_values,
-            αxs=αxs, ∇αxs=∇αxs
-        )
-
-        # Update position and moment estimates
-        tp.x0 = update_x_adam!(tp.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tp.lbs, ubs=tp.ubs)
-        xfinish = tp.x0
-        push!(xall, tp.x0)
-        push!(rewards, μx)
-        push!(rewards_grads, ∇μx)
-
-        # Check for convergence: gradient is approx 0,
-        if length(rewards) > 2 && rewards[end] - rewards[end-1] < 0.
-            # println("Objective is small")
-            xfinish = xall[end - 1]
-            break
-        end
-
-        if length(rewards_grads) > 2 && sign(first(rewards_grads[end - 1])) != sign(first(rewards_grads[end]))
-            # println("Gradient is small")
-            xfinish = xall[end - 1]
-            break
-        end
-    end
-
-    result = (
-        start=xstart, finish=xfinish, final_obj=rewards[end], final_grad=rewards_grads[end], iters=iters, success=true,
-        sequence=xall, grads=rewards_grads, obj=rewards
-    )
-    return result
-end
-
 
 function measure_gap(observations::Vector{T}, fbest::T) where T <: Number
     ϵ = 1e-8
@@ -423,6 +372,9 @@ function measure_gap(observations::Vector{T}, fbest::T) where T <: Number
 
     return result
 end
+
+# function instantaneous_regret(observation::Real, best_observation::Real) = observation - best_observation
+# end
 
 
 function generate_initial_guesses(N::Int, lbs::Vector{T}, ubs::Vector{T},) where T <: Number
