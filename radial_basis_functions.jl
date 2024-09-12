@@ -111,6 +111,12 @@ function kernel_SE(θ=[1.])
     return kernel_generic(k, θ, kernel_SE)
 end
 
+function kernel_periodic(θ=[1., 1.])
+    function k(ρ, θ)
+        return exp(-2 * sin(pi * ρ / θ[2]) ^ 2 / θ[1] ^ 2)
+    end
+    return kernel_generic(k, θ, kernel_periodic)
+end
 
 eval_k(rbf::RadialBasisFunction, r::AbstractVector) = rbf(norm(r))
 

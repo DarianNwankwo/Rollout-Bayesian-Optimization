@@ -104,41 +104,34 @@ function adjoint_rollout!(
     T::AdjointTrajectory;
     spatial_lbs::AbstractVector,
     spatial_ubs::AbstractVector,
-    hyperparameters_lbs::AbstractVector,
-    hyperparameters_ubs::AbstractVector,
     get_observation::AbstractObservable,
-    xstarts::AbstractMatrix,
-    θstarts::AbstractMatrix)
+    xstarts::AbstractMatrix)
     # Initial draw at predetermined location not chosen by policy
-    f0 = get_observation(T.x0, T.θ)
+    f0 = get_observation(T.x0, get_hyperparameters(T))
 
     # Update surrogate and cache the gradient of the posterior mean field
     # TODO: update!(T, x0, f0, θ0) -- so we can keep track of hyperparameters sampled
     condition!(T.fs, T.x0, f0)
 
     # Preallocate for newton solves
-    xlen, θlen = length(get_starting_point(T)), length(get_hyperparameters(T))
-    xθnext = zeros(xlen + θlen)
+    xlen = length(get_starting_point(T))
+    xnext = zeros(xlen)
 
     # Perform rollout for fantasized trajectories
     for j in 1:T.h
         # Solve base acquisition function to determine next sample location
-        xθnext .= multistart_base_solve(
+        xnext .= multistart_base_solve(
             get_fantasy_surrogate(T),
             spatial_lbs=spatial_lbs,
             spatial_ubs=spatial_ubs,
-            hyperparameters_lbs=hyperparameters_lbs,
-            hyperparameters_ubs=hyperparameters_ubs,
+            θfixed=get_hyperparameters(T),
             xstarts=xstarts,
-            θstarts=θstarts,
             fantasy_index=j-1,
             cost=T.cost
         )
-        xnext = xθnext[1:xlen]
-        θnext = xθnext[xlen+1:end]
 
         # Draw fantasized sample at proposed location after base acquisition solve
-        fi = get_observation(xnext, θnext)
+        fi = get_observation(xnext, get_hyperparameters(T))
        
         # Update surrogate and cache the gradient of the posterior mean field
         condition!(T.fs, xnext, fi)
@@ -462,8 +455,8 @@ function simulate_adjoint_trajectory(
 
         adjoint_rollout!(
             T,
-            lowerbounds=lowerbounds,
-            upperbounds=upperbounds,
+            spatial_lbs=lowerbounds,
+            spatial_ubs=upperbounds,
             get_observation=get_observable(T),
             xstarts=inner_solve_xstarts
         )
@@ -491,13 +484,11 @@ function deterministic_simulate_trajectory(
     s::Surrogate,
     tp::TrajectoryParameters;
     inner_solve_xstarts::AbstractMatrix,
-    inner_solve_θstarts::AbstractMatrix,
     func::Function,
     grad::Function,
     cost::AbstractCostFunction = UniformCost())
     deepcopy_s = Base.deepcopy(s)
     slbs, subs = get_spatial_bounds(tp)
-    hlbs, hubs = get_hyperparameter_bounds(tp)
 
     # Rollout trajectory
     T = AdjointTrajectory(
@@ -512,11 +503,8 @@ function deterministic_simulate_trajectory(
     adjoint_rollout!(T,
         spatial_lbs=slbs,
         spatial_ubs=subs,
-        hyperparameters_lbs=hlbs,
-        hyperparameters_ubs=hubs,
         get_observation=get_observable(T),
         xstarts=inner_solve_xstarts,
-        θstarts=inner_solve_θstarts
     )
 
     μxθ = resolve(T)
@@ -537,7 +525,7 @@ function simulate_adjoint_trajectory(
     hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
     cost::AbstractCostFunction = UniformCost())
     deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_spatial_bounds(tp)
+    slbs, subs = get_spatial_bounds(tp)
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
@@ -557,8 +545,8 @@ function simulate_adjoint_trajectory(
 
         adjoint_rollout!(
             T,
-            lowerbounds=lowerbounds,
-            upperbounds=upperbounds,
+            spatial_lbs=slbs,
+            spatial_ubs=subs,
             get_observation=get_observable(T),
             xstarts=inner_solve_xstarts
         )

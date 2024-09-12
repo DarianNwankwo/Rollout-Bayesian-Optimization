@@ -83,15 +83,6 @@ function randsample(N, d, lbs, ubs)
     return X
 end
 
-function sample_random_matrix(xmin, xmax, d, n)
-    matrix = zeros(d, n)
-    for i in 1:d
-        for j in 1:n
-            matrix[i, j] = xmin + (xmax - xmin) * rand()
-        end
-    end
-    return matrix
-end
 
 function stdize(series)
     smax, smin = maximum(series), minimum(series)
@@ -142,24 +133,6 @@ function sgd_hasnot_converged(iter, grads, max_iters; tol=1e-4)
 end
 
 
-function inbounds(x0, lbs, ubs)
-    return all(lbs .< x0 .< ubs)
-end
-
-
-function find_zeros(vector::Vector{Float64})
-    indices = Int[]
-    
-    for i in 2:length(vector)
-        if (vector[i - 1] > 0 && vector[i] <= 0) || (vector[i - 1] <= 0 && vector[i] > 0)
-            push!(indices, i)
-        end
-    end
-    
-    return indices
-end
-
-
 """
 Generate a batch of N points inbounds relative to the lowerbounds and
 upperbounds
@@ -188,30 +161,7 @@ function filter_batch!(B::Matrix{Float64}, X::Matrix{Float64}; ϵ=1e-2)
     end
 end
 
-
-function generate_batch(N, X; lbs, ubs)
-    s = SobolSeq(lbs, ubs)
-    B = reduce(hcat, next!(s) for i = 1:N*2)
-    B = convert(Matrix{Float64}, filter(x -> !(x in X), B)')
-    return B[:, 1:N]
-end
-
-function centered_fd(f, u, du, h)
-    (f(u+h*du)-f(u-h*du))/(2h)
-end
-
-function update_λ(λ, ∇g)
-    k = ceil(log10(norm(∇g)))
-    return λ * 10. ^ (-k)
-end
-
-function update_x(x; λ, ∇g, lbs, ubs)
-    # λ = update_λ(λ, ∇g)
-    x = x .+ λ*∇g
-    x = max.(x, lbs)
-    x = min.(x, ubs)
-    return x
-end
+centered_fd(f, u, du, h) = (f(u+h*du)-f(u-h*du)) / (2h)
 
 """
 This assumes stochastic gradient ascent
@@ -237,116 +187,19 @@ function update_x_adam!(x0::Vector{Float64}; ∇g,  λ, β1, β2, ϵ, m, v, lbs,
     return x  # Return updated position and updated moment estimates
 end
 
-
-
-function stochastic_gradient_ascent_adam1(;
-    λ=0.01, β1=0.9, β2=0.999, ϵ=1e-8, ftol=1e-6, gtol=1e-6, varred=true,
-    sur::RBFsurrogate, tp::TrajectoryParameters, max_sgd_iters::Int, xstarts::Matrix{Float64},
-    candidate_locations::SharedMatrix{Float64}, candidate_values::SharedArray{Float64}
-    )
-    x0 = tp.x0
-    m = [zeros(size(x0))]
-    v = [zeros(size(x0))]
-    xstart = x0
-    xfinish = x0
-    xall = [x0]
-
-    rewards, rewards_grads = [], []
-    iters = 1
-
-    for epoch in 1:max_sgd_iters
-        iters = epoch
-
-        # Compute stochastic estimates of function and gradient
-        μx, ∇μx, μx_stderr, ∇μx_stderr = simulate_forward_trajectory(
-            sur, tp, xstarts; variance_reduction=varred,
-            candidate_locations=candidate_locations, candidate_values=candidate_values
-        )
-        # μx, ∇μx, μx_stderr, ∇μx_stderr = distributed_simulate_trajectory(sur, tp, xstarts; variance_reduction=varred)
-
-        # Update position and moment estimates
-        tp.x0 .= update_x_adam!(tp.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tp.spatial_lbs, ubs=tp.spatial_ubs)
-        xfinish .= tp.x0
-        push!(xall, tp.x0)
-        push!(rewards, μx)
-        push!(rewards_grads, ∇μx)
-
-
-
-        # Check for convergence: gradient is approx 0,
-        if length(rewards) > 2 && rewards[end] - rewards[end-1] < 0.
-            # println("Objective is small")
-            xfinish .= xall[end - 1]
-            break
-        end
-
-        if length(rewards_grads) > 2 && sign(first(rewards_grads[end - 1])) != sign(first(rewards_grads[end]))
-            # println("Gradient is small")
-            xfinish .= xall[end - 1]
-            break
-        end
-    end
-
-    result = (
-        start=xstart, finish=xfinish, final_obj=rewards[end], final_grad=rewards_grads[end], iters=iters, success=true,
-        sequence=xall, grads=rewards_grads, obj=rewards
-    )
-    return result
-end
-
 """
 Early Stopping without a Validation Set: `https://arxiv.org/abs/1703.09580`
 """
-function eswavs(;∇f, ∇f_Σ, sample_size)
-    D = length(∇f)
-    m = sample_size
+function early_stopping_without_a_validation_set(;
+    ∇f::AbstractVector,
+    var_∇f::AbstractVector,
+    sample_size::Integer)
+    dim = length(∇f)
 
-    ratio = sum((∇f .^ 2) ./ ∇f_Σ)
-    return (1. - (m / D) * ratio) > 0.
+    ratio = sum((∇f .^ 2) ./ var_∇f)
+    return (1. - (sample_size / dim) * ratio) > 0.
 end
-
-
-function stochastic_gradient_ascent_adam2(;
-    λ=0.01, β1=0.9, β2=0.999, ϵ=1e-8, ftol=1e-6, gtol=1e-6, varred=true,
-    sur::RBFsurrogate, tp::TrajectoryParameters, max_sgd_iters::Int, xstarts::Matrix{Float64},
-    candidate_locations::SharedMatrix{Float64}, candidate_values::SharedArray{Float64}
-    )
-    tpc = deepcopy(tp)
-    x0 = tpc.x0
-    m = [zeros(size(x0))]
-    v = [zeros(size(x0))]
-    xstart = x0
-    xfinish = x0
-    final_obj = Inf
-
-    iters = 1
-
-    for epoch in 1:max_sgd_iters
-        iters = epoch
-
-        # Compute stochastic estimates of function and gradient
-        μx, ∇μx, μx_std, ∇μx_std = simulate_forward_trajectory(
-            sur, tp, xstarts; variance_reduction=varred,
-            candidate_locations=candidate_locations, candidate_values=candidate_values
-        )
-
-        # Update position and moment estimates
-        tpc.x0 .= update_x_adam!(tpc.x0; ∇g=∇μx, λ=λ, β1=β1, β2=β2, ϵ=ϵ, m=m, v=v, lbs=tpc.lbs, ubs=tpc.ubs)
-        final_obj = μx
-
-        # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
-        # by Mahsereci et al.
-        if eswavs(∇f=∇μx, ∇f_Σ=∇μx_std .^ 2, sample_size=tp.mc_iters)
-            xfinish .= tpc.x0
-            break
-        end
-    end
-
-    result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
-
-    return result
-end
-
+eswavs = early_stopping_without_a_validation_set
 
 
 function measure_gap(observations::Vector{T}, fbest::T) where T <: Number
@@ -373,11 +226,7 @@ function measure_gap(observations::Vector{T}, fbest::T) where T <: Number
     return result
 end
 
-# function instantaneous_regret(observation::Real, best_observation::Real) = observation - best_observation
-# end
-
-
-function generate_initial_guesses(N::Int, lbs::Vector{T}, ubs::Vector{T},) where T <: Number
+function generate_initial_guesses(N::Integer, lbs::Vector{T}, ubs::Vector{T},) where T <: Number
     ϵ = 1e-6
     seq = SobolSeq(lbs, ubs)
     initial_guesses = reduce(hcat, next!(seq) for i = 1:N)
@@ -387,10 +236,116 @@ function generate_initial_guesses(N::Int, lbs::Vector{T}, ubs::Vector{T},) where
     return initial_guesses
 end
 
+struct ExperimentSetup
+    tp::TrajectoryParameters
+    inner_solve_xstarts::AbstractMatrix
+    resolutions::AbstractVector
+    spatial_gradients_container::Union{Nothing, AbstractMatrix}
+    hyperparameter_gradients_container::Union{Nothing, AbstractMatrix}
+end
+
+function ExperimentSetup(;
+    tp::TrajectoryParameters,
+    number_of_starts::Integer)
+    lbs, ubs = get_spatial_bounds(tp)
+    inner_solve_xstarts = generate_initial_guesses(number_of_starts, lbs, ubs)
+    resolutions = zeros(tp.mc_iters)
+    spatial_gradients_container = zeros(length(get_starting_point(tp)), tp.mc_iters)
+    hyperparameter_gradients_container = zeros(length(get_hyperparameters(tp)), tp.mc_iters)
+
+    return ExperimentSetup(
+        tp, inner_solve_xstarts, resolutions, spatial_gradients_container, hyperparameter_gradients_container
+    )
+end
+
+function get_container(es::ExperimentSetup; symbol::Symbol)
+    if symbol == :f
+        return es.resolutions
+    elseif symbol == :grad_f
+        return es.spatial_gradients_container
+    elseif symbol == :grad_hypers
+        return es.hyperparameter_gradients_container
+    else
+        error("Unknown symbol. Use either :f, :grad_f, or :grad_hypers")
+    end
+end
+
+get_starts(es::ExperimentSetup) = es.inner_solve_xstarts
 
 function to(n; key="KB")
     mapping = Dict("KB" => 1, "MB" => 2, "GB" => 3)
     factor = mapping[key]
     conversion = n / (1024 ^ mapping[key])
     return "$(conversion)$(key)"
+end
+
+function stochastic_solve(;
+    optimizer::StochasticGradientAscent,
+    surrogate::Surrogate,
+    tp::TrajectoryParameters,
+    es::ExperimentSetup,
+    start::AbstractVector)
+    tpc = deepcopy(tp)
+    set_starting_point!(tpc, deepcopy(start))
+
+    for iter in 1:50
+        # Compute stochastic estimates of function and gradient
+        eto = simulate_adjoint_trajectory(
+            surrogate,
+            tpc,
+            inner_solve_xstarts=get_starts(es),
+            resolutions=get_container(es, symbol=:f),
+            spatial_gradients_container=get_container(es, symbol=:grad_f),
+            hyperparameter_gradients_container=get_container(es, symbol=:grad_hypers),
+        )
+
+        println("x = $(get_starting_point(tpc))) -- ∇f = $(gradient(eto))")
+        update!(optimizer, x=get_starting_point(tpc), ∇f=gradient(eto))
+
+        # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
+        # by Mahsereci et al.
+        if eswavs(∇f=gradient(eto), var_∇f=std_gradient(eto) .^ 2, sample_size=tp.mc_iters)
+            println("Stopped at: $iter")
+            return get_starting_point(tpc)
+        end
+    end
+
+        # result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
+
+    return get_starting_point(tpc)
+end
+
+function deterministic_solve(;
+    optimizer::StochasticGradientAscent,
+    surrogate::Surrogate,
+    tp::TrajectoryParameters,
+    es::ExperimentSetup,
+    start::AbstractVector,
+    func::Function,
+    grad::Function)
+    tpc = deepcopy(tp)
+    set_starting_point!(tpc, deepcopy(start))
+
+    for iter in 1:200
+        # Compute stochastic estimates of function and gradient
+        eto = deterministic_simulate_trajectory(
+            surrogate,
+            tpc,
+            inner_solve_xstarts=get_starts(es),
+            func=func,
+            grad=grad
+        )
+
+        update!(optimizer, x=get_starting_point(tpc), ∇f=gradient(eto))
+
+        # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
+        # by Mahsereci et al.
+        if eswavs(∇f=gradient(eto), var_∇f=std_gradient(eto) .^ 2, sample_size=tp.mc_iters)
+            return get_starting_point(tpc)
+        end
+    end
+
+        # result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
+
+    return get_starting_point(tpc)
 end

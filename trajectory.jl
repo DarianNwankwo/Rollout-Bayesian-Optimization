@@ -144,11 +144,9 @@ Base.@kwdef mutable struct TrajectoryParameters
     rnstream_sequence::AbstractArray{<:Real, 3}
     spatial_lbs::AbstractVector
     spatial_ubs::AbstractVector
-    hyperparameters_lbs::AbstractVector
-    hyperparameters_ubs::AbstractVector
     θ::AbstractVector
 
-    function TrajectoryParameters(x0, horizon, mc_iters, rnstream, slbs, subs, hlbs, hubs, θ)
+    function TrajectoryParameters(x0, horizon, mc_iters, rnstream, slbs, subs, θ)
         function check_dimensions(x0, lbs, ubs)
             n = length(x0)
             @assert length(lbs) == n && length(ubs) == n "Lower and upper bounds must be the same length as the initial point"
@@ -161,10 +159,9 @@ Base.@kwdef mutable struct TrajectoryParameters
         end
 
         check_dimensions(x0, slbs, subs)
-        check_dimensions(θ, hlbs, hubs)
         check_stream_dimensions(rnstream, length(x0), horizon, mc_iters)
     
-        return new(x0, horizon, mc_iters, rnstream, slbs, subs, hlbs, hubs, θ)
+        return new(x0, horizon, mc_iters, rnstream, slbs, subs, θ)
     end
 end
 
@@ -175,9 +172,7 @@ function TrajectoryParameters(;
     mc_iterations::Integer,
     use_low_discrepancy_sequence::Bool,
     spatial_lowerbounds::AbstractVector,
-    spatial_upperbounds::AbstractVector,
-    hyperparameters_lowerbounds::AbstractVector,
-    hyperparameters_upperbounds::AbstractVector)
+    spatial_upperbounds::AbstractVector)
     if use_low_discrepancy_sequence
         rns = gen_low_discrepancy_sequence(mc_iterations, length(spatial_lowerbounds), horizon + 1)
     else
@@ -191,14 +186,11 @@ function TrajectoryParameters(;
         rns,
         spatial_lowerbounds,
         spatial_upperbounds,
-        hyperparameters_lowerbounds,
-        hyperparameters_upperbounds,
         hypers
     )
 end
 
 get_spatial_bounds(tp::TrajectoryParameters) = (tp.spatial_lbs, tp.spatial_ubs)
-get_hyperparameter_bounds(tp::TrajectoryParameters) = (tp.hyperparameters_lbs, tp.hyperparameters_ubs)
 each_trajectory(tp::TrajectoryParameters) = 1:tp.mc_iters
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
 get_starting_point(tp::TrajectoryParameters) = tp.x0

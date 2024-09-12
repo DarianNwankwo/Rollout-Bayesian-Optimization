@@ -43,49 +43,30 @@ function base_solve(
     fantasy_surrogate::FantasySurrogate;
     spatial_lbs::AbstractVector,
     spatial_ubs::AbstractVector,
-    hyperparameters_lbs::AbstractVector,
-    hyperparameters_ubs::AbstractVector,
     xstart::AbstractVector,
-    θstart::AbstractVector,
+    θfixed::AbstractVector,
     fantasy_index::Int,
     cost::AbstractCostFunction = UniformCost())
-    start = vcat(xstart, θstart)
 
-    function fun(xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
-        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θ, fantasy_index=fantasy_index, cost=cost)
+    function fun(x)
+        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θfixed, fantasy_index=fantasy_index, cost=cost)
         return -eval(fantasy_surrogate_at_xθ)
     end
     
-    function fun_grad!(g, xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
-        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θ, fantasy_index=fantasy_index, cost=cost)
-        g[1:length(xstart)] = -gradient(fantasy_surrogate_at_xθ)
-        g[length(x)+1:end] = -gradient(fantasy_surrogate_at_xθ, wrt_hypers=true)
+    function fun_grad!(g, x)
+        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θfixed, fantasy_index=fantasy_index, cost=cost)
+        g[:] = -gradient(fantasy_surrogate_at_xθ)
     end
     
-    function fun_hess!(h, xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
-
+    function fun_hess!(h, x)
         fantasy_surrogate_at_xθ = fantasy_surrogate(x, θ, fantasy_index=fantasy_index, cost=cost)
-        spatial_slice = 1:length(x)
-        hyperparameters_slice = length(x)+1:length(θ)+1
-
-        h[spatial_slice, spatial_slice] .= -hessian(fantasy_surrogate_at_xθ)
-        h[hyperparameters_slice, hyperparameters_slice] .= -hessian(fantasy_surrogate_at_xθ, wrt_hypers=true)
-        h[hyperparameters_slice, spatial_slice] .= mixed_partials(fantasy_surrogate_at_xθ)
-        h[spatial_slice, hyperparameters_slice] .= h[hyperparameters_slice, spatial_slice]'
+        h[:, :] .= -hessian(fantasy_surrogate_at_xθ)
     end
 
-    lbs = vcat(spatial_lbs, hyperparameters_lbs)
-    ubs = vcat(spatial_ubs, hyperparameters_ubs)
-    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, start)
-    dfc = TwiceDifferentiableConstraints(lbs, ubs)
+    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, xstart)
+    dfc = TwiceDifferentiableConstraints(spatial_lbs, spatial_ubs)
     res = optimize(
-        df, dfc, start, IPNewton(),
+        df, dfc, xstart, IPNewton(),
         Optim.Options(x_tol=1e-3, f_tol=1e-3)
 
     )
@@ -97,48 +78,30 @@ function base_solve(
     surrogate::Surrogate;
     spatial_lbs::AbstractVector,
     spatial_ubs::AbstractVector,
-    hyperparameters_lbs::AbstractVector,
-    hyperparameters_ubs::AbstractVector,
     xstart::AbstractVector,
-    θstart::AbstractVector,
+    θfixed::AbstractVector,
     cost::AbstractCostFunction = UniformCost())
-    start = vcat(xstart, θstart)
 
-    function fun(xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
-        fantasy_surrogate_at_xθ = surrogate(x, θ, cost=cost)
+    function fun(x)
+        fantasy_surrogate_at_xθ = surrogate(x, θfixed, cost=cost)
         return -eval(fantasy_surrogate_at_xθ)
     end
     
-    function fun_grad!(g, xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
-        fantasy_surrogate_at_xθ = surrogate(x, θ, cost=cost)
-        g[1:length(xstart)] = -gradient(fantasy_surrogate_at_xθ)
-        g[length(x)+1:end] = -gradient(fantasy_surrogate_at_xθ, wrt_hypers=true)
+    function fun_grad!(g, x)
+        fantasy_surrogate_at_xθ = surrogate(x, θfixed, cost=cost)
+        g[:] = -gradient(fantasy_surrogate_at_xθ)
     end
     
-    function fun_hess!(h, xθ)
-        x = xθ[1:length(xstart)]
-        θ = xθ[length(x)+1:end]
+    function fun_hess!(h, x)
+        fantasy_surrogate_at_xθ = surrogate(x, θfixed, cost=cost)
 
-        fantasy_surrogate_at_xθ = surrogate(x, θ, cost=cost)
-        spatial_slice = 1:length(x)
-        hyperparameters_slice = length(x)+1:length(θ)+1
-
-        h[spatial_slice, spatial_slice] .= -hessian(fantasy_surrogate_at_xθ)
-        h[hyperparameters_slice, hyperparameters_slice] .= -hessian(fantasy_surrogate_at_xθ, wrt_hypers=true)
-        h[hyperparameters_slice, spatial_slice] .= mixed_partials(fantasy_surrogate_at_xθ)
-        h[spatial_slice, hyperparameters_slice] .= h[hyperparameters_slice, spatial_slice]'
+        h[:, :] .= -hessian(fantasy_surrogate_at_xθ)
     end
 
-    lbs = vcat(spatial_lbs, hyperparameters_lbs)
-    ubs = vcat(spatial_ubs, hyperparameters_ubs)
-    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, start)
-    dfc = TwiceDifferentiableConstraints(lbs, ubs)
+    df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, xstart)
+    dfc = TwiceDifferentiableConstraints(spatial_lbs, spatial_ubs)
     res = optimize(
-        df, dfc, start, IPNewton(),
+        df, dfc, xstart, IPNewton(),
         Optim.Options(x_tol=1e-3, f_tol=1e-3)
 
     )
@@ -192,26 +155,21 @@ function multistart_base_solve(
     fantasy_surrogate::FantasySurrogate;
     spatial_lbs::AbstractVector,
     spatial_ubs::AbstractVector,
-    hyperparameters_lbs::AbstractVector,
-    hyperparameters_ubs::AbstractVector,
     xstarts::AbstractMatrix,
-    θstarts::AbstractMatrix,
+    θfixed::AbstractVector,
     fantasy_index::Int,
     cost::AbstractCostFunction = UniformCost())::AbstractVector
     candidates = []
     
     for i in 1:size(xstarts, 2)
         xi = xstarts[:,i]
-        θi = θstarts[:, i]
 
         minimizer, res = base_solve(
             fantasy_surrogate,
             spatial_lbs=spatial_lbs,
             spatial_ubs=spatial_ubs,
-            hyperparameters_lbs=hyperparameters_lbs,
-            hyperparameters_ubs=hyperparameters_ubs,
             xstart=xi,
-            θstart=θi,
+            θfixed=θfixed,
             fantasy_index=fantasy_index,
             cost=cost
         )
@@ -229,25 +187,20 @@ function multistart_base_solve(
     surrogate::Surrogate;
     spatial_lbs::AbstractVector,
     spatial_ubs::AbstractVector,
-    hyperparameters_lbs::AbstractVector,
-    hyperparameters_ubs::AbstractVector,
     xstarts::AbstractMatrix,
-    θstarts::AbstractMatrix,
+    θfixed::AbstractVector,
     cost::AbstractCostFunction = UniformCost())::AbstractVector
     candidates = []
     
     for i in 1:size(xstarts, 2)
         xi = xstarts[:,i]
-        θi = θstarts[:, i]
 
         minimizer, res = base_solve(
             surrogate,
             spatial_lbs=spatial_lbs,
             spatial_ubs=spatial_ubs,
-            hyperparameters_lbs=hyperparameters_lbs,
-            hyperparameters_ubs=hyperparameters_ubs,
             xstart=xi,
-            θstart=θi,
+            θfixed=θfixed,
             cost=cost
         )
         push!(candidates, (minimizer, minimum(res)))

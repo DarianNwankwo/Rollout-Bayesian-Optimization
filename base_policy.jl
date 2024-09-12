@@ -1,6 +1,17 @@
 abstract type AbstractPolicy end
 
-struct BasePolicy{F<:Function, DFμ<:Function, HFμ<:Function, DFσ<:Function, HFσ<:Function, DFθ<:Function, HFθ<:Function} <: AbstractPolicy
+# TODO: Add support for computing mixed derivatives wrt to x and θ
+struct BasePolicy{
+    F<:Function,
+    DFμ<:Function,
+    HFμ<:Function,
+    DFσ<:Function,
+    HFσ<:Function,
+    DFθ<:Function,
+    HFθ<:Function,
+    MDμθ<:Function,
+    MDσθ<:Function
+    } <: AbstractPolicy
     g::F             # The function g(μ, σ, θ)
     dg_dμ::DFμ       # Gradient of g with respect to μ
     d2g_dμ::HFμ      # Hessian of g with respect to μ
@@ -8,6 +19,8 @@ struct BasePolicy{F<:Function, DFμ<:Function, HFμ<:Function, DFσ<:Function, H
     d2g_dσ::HFσ      # Hessian of g with respect to σ
     dg_dθ::DFθ       # Gradient of g with respect to θ
     d2g_dθ::HFθ      # Hessian of g with respect to θ
+    d2g_dμdθ::MDμθ   # Mixed derivative of g with respect to μ and θ
+    d2g_dσdθ::MDσθ   # Mixed derivative of g with respect to σ and θ
     name::String
 end
 
@@ -18,8 +31,10 @@ function BasePolicy(g::Function, name::String)
     d2g_dσ(μ, σ, θ, sx) = ForwardDiff.derivative(σ -> dg_dσ(μ, σ, θ, sx), σ)
     dg_dθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> g(μ, σ, θ, sx), θ)
     d2g_dθ(μ, σ, θ, sx) = ForwardDiff.hessian(θ -> g(μ, σ, θ, sx), θ)
+    d2g_dμdθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> dg_dμ(μ, σ, θ, sx), θ)
+    d2g_dσdθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> dg_dσ(μ, σ, θ, sx), θ)
 
-    return BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ, name)
+    return BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ, d2g_dμdθ, d2g_dσdθ, name)
 end
 
 (bp::BasePolicy)(μ::Number, σ::Number, θ::AbstractVector, sx) = bp.g(μ, σ, θ, sx)
@@ -58,6 +73,16 @@ second_partials(p::AbstractPolicy) = (
     σ=second_partial(p, symbol=:σ),
     θ=second_partial(p, symbol=:θ)
 )
+
+function mixed_partial(p::AbstractPolicy; symbol::Symbol)
+    if symbol == :μθ
+        p.d2g_dμdθ 
+    elseif symbol == :σθ
+        p.d2g_dσdθ
+    else
+        error("Unknown symbol. Use :μθ or :σθ")
+    end
+end
 
 # Some Common Acquisition Functions
 function EI(; σtol=1e-8)

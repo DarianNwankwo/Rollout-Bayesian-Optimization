@@ -22,19 +22,19 @@ abstract types that appear throughout our framework. The depiction below follows
     * KnownCostFunction
         * UniformCost
         * NonUniformCost
-    * UnknownCostFunction
+    * UnknownCostFunction (can be unknown and deterministic; fix)
         * GaussianProcessCost
 * AbstractSurrogate
     * Surrogate
     * AbstractFantasySurrogate
         * FantasySurrogate
-    * AbstractPerturbationSurrogate
-        * SpatialPerturbationSurrogate
-        * DataPerturbationSurrogate
+        * AbstractPerturbationSurrogate
+            * SpatialPerturbationSurrogate
+            * DataPerturbationSurrogate
 * AbstractObservable
     * DeterministicObservable
     * StochasticObservable
-* AbstractTrajectory
+* AbstractTrajectory (fix typing on concrete types)
     * ForwardTrajectory
     * AdjointTrajectory
 * AbstractPolicy
