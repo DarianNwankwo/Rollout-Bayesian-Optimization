@@ -1,3 +1,4 @@
+import Base:+, *
 # https://www.sfu.ca/~ssurjano/optimization.html
 # https://en.wikipedia.org/wiki/Test_functions_for_optimization
 
@@ -15,6 +16,45 @@ function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
     return map(
         !grad ? testfn.f : testfn.∇f,
         eachcol(X)
+    )
+end
+
+
+function get_collapsed_bounds(t1::TestFunction, t2::TestFunction)
+    closest_to_origin(x::AbstractVector) = x[findmin(abs, x)[2]]
+
+    bounds = zeros(t1.dim, 2)
+    union_lowerbounds = [t1.bounds[:, 1] t2.bounds[:, 1]]
+    union_upperbounds = [t1.bounds[:, 2] t2.bounds[:, 2]]
+
+    for i = 1:t1.dim
+        bounds[i, 1] = closest_to_origin(union_lowerbounds[i, :])
+        bounds[i, 2] = closest_to_origin(union_upperbounds[i, :])
+    end
+
+    return bounds
+end
+
+
+function +(t1::TestFunction, t2::TestFunction)
+    @assert t1.dim == t2.dim "dim(t1) must equal dim(t2)"
+    return TestFunction(
+        t1.dim,
+        get_collapsed_bounds(t1, t2),
+        (zeros(t1.dim),),
+        (x) -> t1.f(x) + t2.f(x),
+        (x) -> t1.∇f(x) + t2.∇f(x)
+    )
+end
+
+function *(t1::TestFunction, t2::TestFunction)
+    @assert t1.dim == t2.dim "dim(t1) must equal dim(t2)"
+    return TestFunction(
+        t1.dim,
+        get_collapsed_bounds(t1, t2),
+        (zeros(t1.dim),),
+        (x) -> t1.f(x) * t2.f(x),
+        (x) -> t1.f(x) * t2.∇f(x) + t1.∇f(x) * t2.f(x)
     )
 end
 

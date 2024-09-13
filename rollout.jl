@@ -250,6 +250,7 @@ function solve_dual_x(
     solve_index::Int)
     sx = recover_policy_solve(T, solve_index=solve_index)
     x_dual = -sx.∇μ * y_duals[solve_index + 1]
+    # x_dual = -T.observable.gradients[:, solve_index] * y_duals[solve_index + 1]
     dim = length(x_duals[1])
     I_d = Matrix{Float64}(I(dim))
     
@@ -275,6 +276,7 @@ function gather_g(T::AdjointTrajectory; optimal_index::Int)
     sx = recover_policy_solve(T, solve_index=0)
     dim = length(sx.∇μ)
     g::Vector{AbstractMatrix} = [sx.∇μ'] # T.observable.gradients[:, optimal_index] I think
+    # g::Vector{AbstractMatrix} = [T.observable.gradients[:, optimal_index]']
     I_d = Matrix{Float64}(I(dim))
 
     for policy_solve_step in 1:optimal_index
@@ -328,7 +330,7 @@ function gradient(T::AdjointTrajectory)
             # The final gradient depends linearly on the function gradients
             # so we replace the random variables with their expectations
             sx = recover_policy_solve(T, solve_index=0)
-            return (∇x=sx.∇μ, ∇θ=zeros(θdim))
+            return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
         else
             error("Unsupported observable type")
         end

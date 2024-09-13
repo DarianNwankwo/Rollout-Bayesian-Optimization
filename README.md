@@ -14,7 +14,7 @@ enabling stochastic gradient-based optimization of sampling policies.
 ## Software Design
 In order to enable our computations of interest, we expressed each core computational concept as its own
 abstract type and built out our implementations from there. We first begin by enumerating the fundamental
-abstract types that appear throughout our framework. The depiction below follows julia's type system, that is, the root node represents a concrete type--all other nodes are abstract:
+abstract types that appear throughout our framework. The depiction below follows julia's type system, that is, the child node represents a concrete type--all other nodes are abstract:
 * AbstractKernel
     * StationaryKernel
         * RadialBasisFunction
