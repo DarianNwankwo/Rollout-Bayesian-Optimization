@@ -247,7 +247,7 @@ function poi_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=1
         initial_guess = initial_guesses[:, j]
         result = optimize(
             poi, lbs, ubs, initial_guess, Fminbox(LBFGS()),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=max_iterations)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -293,7 +293,7 @@ function ei_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, max_iterations=10
         dfc = TwiceDifferentiableConstraints(lbs, ubs)
         result = optimize(
             df, dfc, initial_guess, IPNewton(),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=max_iterations)
         )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
@@ -320,7 +320,7 @@ function ucb_solver(s::RBFsurrogate, lbs, ubs; initial_guesses, β=3., max_itera
         initial_guess = initial_guesses[:, j]
         result = optimize(
             ucb, lbs, ubs, initial_guess, Fminbox(LBFGS()),
-            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=100)
+            Optim.Options(x_tol=1e-3, f_tol=1e-3, time_limit=6., iterations=max_iterations)
             )
         cur_minimizer, cur_minimum = Optim.minimizer(result), Optim.minimum(result)
 
