@@ -299,18 +299,14 @@ function stochastic_solve(;
             hyperparameter_gradients_container=get_container(es, symbol=:grad_hypers),
         )
 
-        println("x = $(get_starting_point(tpc))) -- ∇f = $(gradient(eto))")
-        update!(optimizer, x=get_starting_point(tpc), ∇f=gradient(eto))
-
         # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
         # by Mahsereci et al.
         if eswavs(∇f=gradient(eto), var_∇f=std_gradient(eto) .^ 2, sample_size=tp.mc_iters)
-            println("Stopped at: $iter")
-            return get_starting_point(tpc)
+            break
         end
-    end
 
-        # result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
+        update!(optimizer, x=get_starting_point(tpc), ∇f=gradient(eto))
+    end
 
     return get_starting_point(tpc)
 end
@@ -322,12 +318,16 @@ function deterministic_solve(;
     es::ExperimentSetup,
     start::AbstractVector,
     func::Function,
-    grad::Function)
+    grad::Function,
+    tol::Float64 = 1e-6,   # Tolerance for gradient norm
+    max_iters::Int = 200   # Maximum number of iterations
+)
+    # Copy the trajectory parameters and set the starting point
     tpc = deepcopy(tp)
     set_starting_point!(tpc, deepcopy(start))
 
-    for iter in 1:200
-        # Compute stochastic estimates of function and gradient
+    for iter in 1:max_iters
+        # Compute deterministic estimates of function and gradient
         eto = deterministic_simulate_trajectory(
             surrogate,
             tpc,
@@ -336,16 +336,18 @@ function deterministic_solve(;
             grad=grad
         )
 
-        update!(optimizer, x=get_starting_point(tpc), ∇f=gradient(eto))
+        # Get the gradient from the simulation
+        ∇f = gradient(eto)
 
-        # Check for convergence using statistic developed in "Early Stopping Without a Validation Set"
-        # by Mahsereci et al.
-        if eswavs(∇f=gradient(eto), var_∇f=std_gradient(eto) .^ 2, sample_size=tp.mc_iters)
-            return get_starting_point(tpc)
+        # Check convergence based on the gradient norm
+        if norm(∇f) <= tol
+            break
         end
+
+        # Update the optimizer with the current point and gradient
+        update!(optimizer, x=get_starting_point(tpc), ∇f=∇f)
     end
 
-        # result = (start=xstart, finish=xfinish, final_obj=final_obj, iters=iters, success=true)
-
+    # Return the final starting point as the solution
     return get_starting_point(tpc)
 end

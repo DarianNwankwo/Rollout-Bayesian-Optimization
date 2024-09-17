@@ -33,6 +33,38 @@ mutable struct ForwardTrajectory <: AbstractTrajectory
 end
 
 """
+Constructor for `ForwardTrajectory`.
+
+# Arguments:
+- `s::RBFsurrogate`: The RBF surrogate model to be used in the trajectory.
+- `x0::Vector{Float64}`: The starting point of the trajectory.
+- `h::Int`: The number of steps (or horizon) for the trajectory.
+
+# Returns:
+- `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
+"""
+function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
+    fmin = minimum(get_observations(base_surrogate))
+    d, N = size(get_covariates(base_surrogate))
+
+    ∇ys = [zeros(d) for i in 1:N]
+
+    fsur = fit_fsurrogate(base_surrogate, horizon)
+    mfsur = fit_multioutput_fsurrogate(base_surrogate, horizon)
+
+    jacobians = [Matrix{Float64}(I(d))]
+
+    return ForwardTrajectory(base_surrogate, fsur, mfsur, jacobians, fmin, start, horizon)
+end
+
+
+get_starting_point(T::ForwardTrajectory) = T.x0
+get_base_surrogate(T::ForwardTrajectory) = T.s
+get_fantasy_surrogate(T::ForwardTrajectory) = T.fs
+get_horizon(T::ForwardTrajectory) = T.h
+get_minimum(T::ForwardTrajectory) = T.fmin
+
+"""
 A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in the system.
 
 # Fields:
@@ -55,31 +87,6 @@ mutable struct AdjointTrajectory <: AbstractTrajectory
     h::Integer
     observable::Union{Missing, AbstractObservable}
     cost::AbstractCostFunction
-end
-
-"""
-Constructor for `ForwardTrajectory`.
-
-# Arguments:
-- `s::RBFsurrogate`: The RBF surrogate model to be used in the trajectory.
-- `x0::Vector{Float64}`: The starting point of the trajectory.
-- `h::Int`: The number of steps (or horizon) for the trajectory.
-
-# Returns:
-- `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
-"""
-function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
-    fmin = minimum(get_observations(base_surrogate))
-    d, N = size(get_covariates(base_surrogate))
-
-    ∇ys = [zeros(d) for i in 1:N]
-
-    fsur = fit_fsurrogate(base_surrogate, horizon)
-    mfsur = fit_multioutput_fsurrogate(base_surrogate, horizon)
-
-    jacobians = [I(d)]
-
-    return ForwardTrajectory(base_surrogate, fsur, mfsur, jacobians, fmin, start, horizon)
 end
 
 

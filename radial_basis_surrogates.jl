@@ -30,6 +30,8 @@ struct Surrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: 
     g::P
 end
 
+get_base_policy(s::Surrogate) = s.g
+
 
 function Surrogate(
     ψ::RadialBasisFunction,
@@ -1439,7 +1441,7 @@ function eval_mixed_KxX(ms::MultiOutputFantasyRBFsurrogate, x::Vector{Float64})
         # 3. Compute covariance of function observation against gradient observations
         first_row = vcat(first_row, -eval_∇KxX(ms.ψ, x, ms.X[:, M:M]))
         # 3. Compute covariance of gradient observation against gradient observations
-        remainder_rows = hcat(remainder_rows, -eval_Hk(ms.ψ, x - ms.X[:, M:M]))
+        remainder_rows = hcat(remainder_rows, -eval_Hk(ms.ψ, vec(x - ms.X[:, M:M])))
         # remainder_rows = hcat(remainder_rows, -eval_Hk(ms.ψ, ms.X[:, M:M] - x))
     end
 
@@ -1510,7 +1512,7 @@ function update_multioutput_fsurrogate!(s::MultiOutputFantasyRBFsurrogate, xnew:
             first_row = vcat(first_row, -eval_∇KxX(s.ψ, xnew, s.X[:, M:M]))
             # 3. Compute covariance of gradient observation against gradient observations
             # remainder_rows = hcat(remainder_rows, -eval_Hk(s.ψ, xnew - s.X[:, M:M]))
-            remainder_rows = hcat(remainder_rows, -eval_Hk(s.ψ, xnew - s.X[:, M:M]))
+            remainder_rows = hcat(remainder_rows, -eval_Hk(s.ψ, vec(xnew - s.X[:, M:M])))
         end
     end
 
@@ -1712,7 +1714,35 @@ end
 This only optimizes for lengthscale hyperparameter where the lengthscale is the
 same in each respective dimension.
 """
-function Optim.optimize(s::Surrogate, kernel_constructor)
+function Optim.optimize(
+    s::Surrogate,
+    kernel_constructor;
+    lowerbounds::AbstractVector,
+    upperbounds::AbstractVector,
+    optim_options = Optim.Options(iterations=30))
+    function f(θ::AbstractVector)
+        kernel = kernel_constructor(θ)
+        lsur = Surrogate(
+            kernel,
+            get_covariates(s),
+            get_observations(s),
+            base_policy=get_base_policy(s),
+            σn2=s.σn2
+        )
+        return -log_likelihood(lsur)
+    end
+
+    res = optimize(f, lowerbounds, upperbounds, s.ψ.θ, Fminbox(LBFGS()), optim_options)
+    θ = Optim.minimizer(res)
+    kernel = kernel_constructor(θ)
+    opt_sur = Surrogate(
+        kernel,
+        get_covariates(s),
+        get_observations(s),
+        base_policy=get_base_policy(s),
+        σn2=s.σn2
+    )
+    return opt_sur
 end
 
 function optimize_hypers_optim(s::RBFsurrogate, ψconstructor; max_iterations=100)

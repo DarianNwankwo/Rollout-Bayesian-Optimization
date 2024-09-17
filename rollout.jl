@@ -107,7 +107,7 @@ function adjoint_rollout!(
     get_observation::AbstractObservable,
     xstarts::AbstractMatrix)
     # Initial draw at predetermined location not chosen by policy
-    f0 = get_observation(T.x0, get_hyperparameters(T))
+    f0 = get_observation(get_starting_point(T), get_hyperparameters(T))
 
     # Update surrogate and cache the gradient of the posterior mean field
     # TODO: update!(T, x0, f0, θ0) -- so we can keep track of hyperparameters sampled
@@ -195,11 +195,11 @@ function gradient(T::ForwardTrajectory)
         return zeros(length(xb))
     end
 
-    if best_ndx == 1
+    if best_ndx == 0
         return -∇fb
     end
     
-    opt_jacobian = T.jacobians[best_ndx]
+    opt_jacobian = T.jacobians[best_ndx + 1]
     return transpose(-∇fb'*opt_jacobian)
 end
 
@@ -211,7 +211,7 @@ end
 
 function recover_policy_solve(T::AdjointTrajectory; solve_index::Int64)
     # @assert solve_index > 0 "The first step isn't chosen via an optimization problem"
-    @assert solve_index <= T.h "Can only recover policy solves up to, and including, step $(T.h)"
+    @assert solve_index <= T.h + 1 "Can only recover policy solves up to, and including, step $(T.h + 1)"
 
     N = T.fs.known_observed
     xopt = T.fs.X[:, N + solve_index + 1]
@@ -317,7 +317,9 @@ function gradient(T::AdjointTrajectory)
     xdim, θdim = length(T.x0), length(T.θ)
 
     # Case #1: Nothing along the trajectory was found to be better than what has been observed
-    if fmini <= fb return (∇x=zeros(xdim), ∇θ=zeros(θdim)) end
+    if fmini <= fb
+        return (∇x=zeros(xdim), ∇θ=zeros(θdim))
+    end
 
     # TODO: This should probably be a function that dispatches to grab the correct gradient based on the
     # type of observable
@@ -329,8 +331,10 @@ function gradient(T::AdjointTrajectory)
         elseif T.observable isa StochasticObservable
             # The final gradient depends linearly on the function gradients
             # so we replace the random variables with their expectations
-            sx = recover_policy_solve(T, solve_index=0)
-            return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
+            # sx = recover_policy_solve(T, solve_index=1)
+            ∇x = convert(Vector, -T.observable.gradients[:, t+1])
+            # return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
+            return (∇x=∇x, ∇θ=zeros(θdim))
         else
             error("Unsupported observable type")
         end
@@ -374,7 +378,7 @@ function simulate_forward_trajectory(
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = ForwardTrajectory(base_surrogate=deepcopy_s, start=starting_point(tp), horizon=tp.h)
+        T = ForwardTrajectory(base_surrogate=deepcopy_s, start=get_starting_point(tp), horizon=get_horizon(tp))
         rollout!(
             T,
             lowerbounds=lowerbounds,
@@ -389,9 +393,9 @@ function simulate_forward_trajectory(
     end
 
     # Average across trajectories
-    μx = mean(resolutions)
-    ∇μx = mean(gradient_resolutions, dims=2)
-    std_μx = std(resolutions, mean=μx)
+    μx = Distributions.mean(resolutions)
+    ∇μx = Distributions.mean(gradient_resolutions, dims=2)
+    std_μx = Distributions.std(resolutions, mean=μx)
 
     return μx, std_μx, ∇μx
 end
