@@ -19,7 +19,7 @@ abstract type AbstractPerturbationSurrogate <: AbstractSurrogate end
 The name flexible surrogate here isn't quite what we should name things. What I mean by flexible surrogate is that
 the user can specify some arbitrary acquisition function in terms of μ, σ, and θ.
 """
-struct Surrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: AbstractPolicy} <: AbstractSurrogate
+struct Surrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: AbstractDecisionRule} <: AbstractSurrogate
     ψ::RadialBasisFunction
     X::T2
     K::T2
@@ -30,20 +30,20 @@ struct Surrogate{T1<:AbstractVector{Float64}, T2<:AbstractMatrix{Float64}, P <: 
     g::P
 end
 
-get_base_policy(s::Surrogate) = s.g
+get_decision_rule(s::Surrogate) = s.g
 
 
 function Surrogate(
     ψ::RadialBasisFunction,
     X::AbstractMatrix,
     y::AbstractVector;
-    base_policy::AbstractPolicy = EI(),
+    decision_rule::AbstractDecisionRule = EI(),
     σn2::Number = 1e-6)
     d, N = size(X)
     K = eval_KXX(ψ, X, σn2=σn2)
     L = cholesky(Hermitian(K)).L
     c = L'\(L\y)
-    return Surrogate(ψ, X, K, L, y, c, σn2, base_policy)
+    return Surrogate(ψ, X, K, L, y, c, σn2, decision_rule)
 end
 
 function condition(s::Surrogate, xnew::AbstractVector, ynew::Real)
@@ -173,7 +173,7 @@ mutable struct FantasySurrogate{
         T2<:AbstractMatrix{Float64},
         T3<:Int,
         T4<:AbstractVector{<:AbstractVector{Float64}},
-        P<:AbstractPolicy} <: AbstractFantasySurrogate
+        P<:AbstractDecisionRule} <: AbstractFantasySurrogate
     ψ::RadialBasisFunction
     X::T2
     K::T2
@@ -1215,21 +1215,21 @@ function eval(δs::SpatialPerturbationRBFSurrogate, sx; δx::Vector{Float64}, cu
     δsx.∇μ = () -> δsx.∇kx*fs.cs[δs.max_fantasized_step + TOTAL_OFFSET] + sx.∇kx*δsx.c
 
     δsx.σ = () -> (-2*δsx.kx'*sx.w + sx.w'*(δsx.K*sx.w)) / (2*sx.σ)
-    # δsx.∇σ = () -> (sx.∇w*(δsx.K*sx.w) - δsx.∇kx*sx.w - sx.∇w*δsx.kx - δsx.σ*sx.∇σ) / sx.σ
-    δsx.∇σ = function()
-        a0 = 0.
-        try
-            a0 = δsx.K*sx.w
-        catch e
-            println("δsx.K=$(δsx.K) -- w=$(sx.w)")
-        end
-        a1 = sx.∇w * a0
-        a2 = δsx.∇kx*sx.w
-        a3 = sx.∇w*δsx.kx
-        a4 = δsx.σ*sx.∇σ
-        a5 = sx.σ
-        return (a1 - a2 - a3 - a4) / a5
-    end
+    δsx.∇σ = () -> (sx.∇w*(δsx.K*sx.w) - δsx.∇kx*sx.w - sx.∇w*δsx.kx - δsx.σ*sx.∇σ) / sx.σ
+    # δsx.∇σ = function()
+    #     a0 = 0.
+    #     try
+    #         a0 = δsx.K*sx.w
+    #     catch e
+    #         println("δsx.K=$(δsx.K) -- w=$(sx.w)")
+    #     end
+    #     a1 = sx.∇w * a0
+    #     a2 = δsx.∇kx*sx.w
+    #     a3 = sx.∇w*δsx.kx
+    #     a4 = δsx.σ*sx.∇σ
+    #     a5 = sx.σ
+    #     return (a1 - a2 - a3 - a4) / a5
+    # end
 
     δsx.z = () -> (-δsx.μ - δsx.σ*sx.z) / sx.σ
     δsx.∇z = () -> (δsx.∇μ - sx.∇σ*δsx.z - δsx.∇σ*sx.z - δsx.σ*sx.∇z) / sx.σ
@@ -1625,9 +1625,9 @@ end
 Given a multi-output GP surrogate and a point x, draw a sample from the
 posterior distribution of the function value and its gradient at x.
 """
-get_observations(s::AbstractSurrogate) = s.y
+get_observations(s) = s.y
 get_grad_observations(s::MultiOutputFantasyRBFsurrogate) = s.∇y
-get_covariates(s::AbstractSurrogate) = s.X
+get_covariates(s) = s.X
 Base.length(s::AbstractSurrogate) = length(s.y)
 coefficients(s::Surrogate) = s.c
 
@@ -1726,7 +1726,7 @@ function Optim.optimize(
             kernel,
             get_covariates(s),
             get_observations(s),
-            base_policy=get_base_policy(s),
+            decision_rule=get_decision_rule(s),
             σn2=s.σn2
         )
         return -log_likelihood(lsur)
@@ -1739,7 +1739,7 @@ function Optim.optimize(
         kernel,
         get_covariates(s),
         get_observations(s),
-        base_policy=get_base_policy(s),
+        decision_rule=get_decision_rule(s),
         σn2=s.σn2
     )
     return opt_sur
