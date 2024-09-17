@@ -1,7 +1,7 @@
-abstract type AbstractPolicy end
+abstract type AbstractDecisionRule end
 
 # TODO: Add support for computing mixed derivatives wrt to x and θ
-struct BasePolicy{
+struct DecisionRule{
     F<:Function,
     DFμ<:Function,
     HFμ<:Function,
@@ -11,7 +11,7 @@ struct BasePolicy{
     HFθ<:Function,
     MDμθ<:Function,
     MDσθ<:Function
-    } <: AbstractPolicy
+    } <: AbstractDecisionRule
     g::F             # The function g(μ, σ, θ)
     dg_dμ::DFμ       # Gradient of g with respect to μ
     d2g_dμ::HFμ      # Hessian of g with respect to μ
@@ -24,7 +24,7 @@ struct BasePolicy{
     name::String
 end
 
-function BasePolicy(g::Function, name::String)
+function DecisionRule(g::Function, name::String)
     dg_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> g(μ, σ, θ, sx), μ)
     d2g_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> dg_dμ(μ, σ, θ, sx), μ)
     dg_dσ(μ, σ, θ, sx) = ForwardDiff.derivative(σ -> g(μ, σ, θ, sx), σ)
@@ -34,13 +34,13 @@ function BasePolicy(g::Function, name::String)
     d2g_dμdθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> dg_dμ(μ, σ, θ, sx), θ)
     d2g_dσdθ(μ, σ, θ, sx) = ForwardDiff.gradient(θ -> dg_dσ(μ, σ, θ, sx), θ)
 
-    return BasePolicy(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ, d2g_dμdθ, d2g_dσdθ, name)
+    return DecisionRule(g, dg_dμ, d2g_dμ, dg_dσ, d2g_dσ, dg_dθ, d2g_dθ, d2g_dμdθ, d2g_dσdθ, name)
 end
 
-(bp::BasePolicy)(μ::Number, σ::Number, θ::AbstractVector, sx) = bp.g(μ, σ, θ, sx)
+(bp::DecisionRule)(μ::Number, σ::Number, θ::AbstractVector, sx) = bp.g(μ, σ, θ, sx)
 
 
-function first_partial(p::AbstractPolicy; symbol::Symbol)
+function first_partial(p::AbstractDecisionRule; symbol::Symbol)
     if symbol == :μ
         return p.dg_dμ
     elseif symbol == :σ
@@ -51,13 +51,13 @@ function first_partial(p::AbstractPolicy; symbol::Symbol)
         error("Unknown symbol. Use :μ, :σ, or :θ")
     end
 end
-first_partials(p::AbstractPolicy) = (
+first_partials(p::AbstractDecisionRule) = (
     μ=first_partial(p, symbol=:μ),
     σ=first_partial(p, symbol=:σ),
     θ=first_partial(p, symbol=:θ)
 )
 
-function second_partial(p::AbstractPolicy; symbol::Symbol)
+function second_partial(p::AbstractDecisionRule; symbol::Symbol)
     if symbol == :μ
         return p.d2g_dμ
     elseif symbol == :σ
@@ -68,13 +68,13 @@ function second_partial(p::AbstractPolicy; symbol::Symbol)
         error("Unknown symbol. Use :μ, :σ, or :θ")
     end
 end
-second_partials(p::AbstractPolicy) = (
+second_partials(p::AbstractDecisionRule) = (
     μ=second_partial(p, symbol=:μ),
     σ=second_partial(p, symbol=:σ),
     θ=second_partial(p, symbol=:θ)
 )
 
-function mixed_partial(p::AbstractPolicy; symbol::Symbol)
+function mixed_partial(p::AbstractDecisionRule; symbol::Symbol)
     if symbol == :μθ
         p.d2g_dμdθ 
     elseif symbol == :σθ
@@ -91,7 +91,7 @@ function EI(; σtol=1e-8)
         if σ < σtol
             return 0.
         end
-        fmini = minimum(sx.y)
+        fmini = minimum(get_observations(sx))
         improvement = fmini - μ - θ[1]
         z = improvement / σ
         standard_normal = Distributions.Normal(0, 1)
@@ -100,7 +100,7 @@ function EI(; σtol=1e-8)
         return expected_improvement
     end
 
-    return BasePolicy(ei, "Expected Improvement")
+    return DecisionRule(ei, "Expected Improvement")
 end
 
 
@@ -109,7 +109,7 @@ function POI(; σtol=1e-8)
         if σ < σtol
             return 0.0
         end
-        fmini = minimum(sx.y)
+        fmini = minimum(get_observations(sx))
         improvement = fmini - μ - θ[1]
         z = improvement / σ
         standard_normal = Distributions.Normal(0, 1)
@@ -118,7 +118,7 @@ function POI(; σtol=1e-8)
         return probability_improvement
     end
 
-    return BasePolicy(poi, "Probability of Improvement")
+    return DecisionRule(poi, "Probability of Improvement")
 end
 
 function UCB()
@@ -126,9 +126,9 @@ function UCB()
         return μ + θ[1] * σ
     end
 
-    return BasePolicy(ucb, "Upper Confidence Bound")
+    return DecisionRule(ucb, "Upper Confidence Bound")
 end
 
 
 # Custom string method for BasePolicy
-Base.string(bp::AbstractPolicy) = bp.name
+Base.string(bp::AbstractDecisionRule) = bp.name
