@@ -37,5 +37,5 @@ abstract types that appear throughout our framework. The depiction below follows
 * AbstractTrajectory (fix typing on concrete types)
     * ForwardTrajectory
     * AdjointTrajectory
-* AbstractPolicy
-    * BasePolicy
+* AbstractDecisionRule
+    * DecisionRule
