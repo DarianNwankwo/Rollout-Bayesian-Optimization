@@ -39,3 +39,6 @@ abstract types that appear throughout our framework. The depiction below follows
     * AdjointTrajectory
 * AbstractDecisionRule
     * DecisionRule
+
+Surrogate depends on RadialBasisFunction. FantasySurrogate depends on a base surrogate, which is of type Surrogate. SpatialPerteurbationSurrogate depends on FantasySurrogate. DataPerteurbationSurrogate depends on FantasySurrogate.
+Surrogate also depends on DecisionRule. AdjointTrajectory depends on DeterministicObservable or StochasticObservable.

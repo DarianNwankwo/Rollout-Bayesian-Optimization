@@ -1,27 +1,21 @@
 abstract type AbstractDecisionRule end
 
 # TODO: Add support for computing mixed derivatives wrt to x and θ
-struct DecisionRule{
-    F<:Function,
-    DFμ<:Function,
-    HFμ<:Function,
-    DFσ<:Function,
-    HFσ<:Function,
-    DFθ<:Function,
-    HFθ<:Function,
-    MDμθ<:Function,
-    MDσθ<:Function
-    } <: AbstractDecisionRule
+struct DecisionRule{F <: Function} <: AbstractDecisionRule
     g::F             # The function g(μ, σ, θ)
-    dg_dμ::DFμ       # Gradient of g with respect to μ
-    d2g_dμ::HFμ      # Hessian of g with respect to μ
-    dg_dσ::DFσ       # Gradient of g with respect to σ
-    d2g_dσ::HFσ      # Hessian of g with respect to σ
-    dg_dθ::DFθ       # Gradient of g with respect to θ
-    d2g_dθ::HFθ      # Hessian of g with respect to θ
-    d2g_dμdθ::MDμθ   # Mixed derivative of g with respect to μ and θ
-    d2g_dσdθ::MDσθ   # Mixed derivative of g with respect to σ and θ
+    dg_dμ       # Gradient of g with respect to μ
+    d2g_dμ      # Hessian of g with respect to μ
+    dg_dσ       # Gradient of g with respect to σ
+    d2g_dσ      # Hessian of g with respect to σ
+    dg_dθ       # Gradient of g with respect to θ
+    d2g_dθ      # Hessian of g with respect to θ
+    d2g_dμdθ   # Mixed derivative of g with respect to μ and θ
+    d2g_dσdθ   # Mixed derivative of g with respect to σ and θ
     name::String
+end
+
+function Base.show(io::IO, r::DecisionRule{F}) where F
+    print(io, "DecisionRule{$(r.name)}")
 end
 
 function DecisionRule(g::Function, name::String)
@@ -94,15 +88,13 @@ function EI(; σtol=1e-8)
         fmini = minimum(get_observations(sx))
         improvement = fmini - μ - θ[1]
         z = improvement / σ
-        standard_normal = Distributions.Normal(0, 1)
         
-        expected_improvement = improvement*Distributions.cdf(standard_normal, z) + σ*Distributions.pdf(standard_normal, z)
+        expected_improvement = improvement*Distributions.normcdf(z) + σ*Distributions.normpdf(z)
         return expected_improvement
     end
 
-    return DecisionRule(ei, "Expected Improvement")
+    return DecisionRule(ei, "EI")
 end
-
 
 function POI(; σtol=1e-8)
     function poi(μ, σ, θ, sx)
@@ -112,13 +104,12 @@ function POI(; σtol=1e-8)
         fmini = minimum(get_observations(sx))
         improvement = fmini - μ - θ[1]
         z = improvement / σ
-        standard_normal = Distributions.Normal(0, 1)
 
-        probability_improvement = Distributions.cdf(standard_normal, z)
+        probability_improvement = Distributions.normcdf(z)
         return probability_improvement
     end
 
-    return DecisionRule(poi, "Probability of Improvement")
+    return DecisionRule(poi, "POI")
 end
 
 function UCB()
@@ -126,7 +117,7 @@ function UCB()
         return μ + θ[1] * σ
     end
 
-    return DecisionRule(ucb, "Upper Confidence Bound")
+    return DecisionRule(ucb, "UCB")
 end
 
 

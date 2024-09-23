@@ -7,6 +7,41 @@ trajectory.
 """
 abstract type AbstractTrajectory end
 
+get_starting_point(T::AbstractTrajectory) = T.x0
+get_base_surrogate(T::AbstractTrajectory) = T.s
+get_fantasy_surrogate(T::AbstractTrajectory) = T.fs
+get_horizon(T::AbstractTrajectory) = T.horizon
+get_observable(T::AbstractTrajectory) = T.observable
+
+mutable struct ForwardTrajectory <: AbstractTrajectory
+    s::RBFsurrogate
+    fs::FantasyRBFsurrogate
+    jacobians::Vector{Matrix{Float64}}
+    x0::Vector{Float64}
+    horizon::Int
+    observable::Union{Missing, AbstractObservable}
+end
+
+function ForwardTrajectory(; base_surrogate::RBFsurrogate, start::Vector{T}, horizon::Int) where T <: Real
+    d, N = size(get_covariates(base_surrogate))
+    # fsur = fit_sfsurrogate(base_surrogate, horizon)
+    fsur = fit_fsurrogate(base_surrogate, horizon)
+    # Preallocate all space for each jacobian
+    jacobians = [Matrix{Float64}(I(d))]
+    for _ in 1:horizon
+        push!(jacobians, zeros(d, d))
+    end
+
+    observable = missing
+    
+    return ForwardTrajectory(base_surrogate, fsur, jacobians, start, horizon, observable)
+end
+
+attach_observable!(FT::ForwardTrajectory, observable::AbstractObservable) = FT.observable = observable
+get_observable(FT::ForwardTrajectory) = FT.observable
+get_jacobian(FT::ForwardTrajectory; index::Int) = FT.jacobians[index]
+set_jacobian!(FT::ForwardTrajectory; jacobian::Matrix{Float64}, index::Int) = FT.jacobians[index] = jacobian
+
 """
 A mutable struct `ForwardTrajectory` that represents a forward trajectory in the system.
 
@@ -22,14 +57,14 @@ A mutable struct `ForwardTrajectory` that represents a forward trajectory in the
 # Constructor:
 - `ForwardTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `ForwardTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
-mutable struct ForwardTrajectory <: AbstractTrajectory
+mutable struct ForwardTrajectoryWithMOGP <: AbstractTrajectory
     s::RBFsurrogate
     fs::FantasyRBFsurrogate
     mfs::MultiOutputFantasyRBFsurrogate
-    jacobians::Vector{AbstractMatrix{<:Real}}
-    fmin::Real
-    x0::AbstractVector
-    h::Integer
+    jacobians::Vector{Matrix{Float64}}
+    fmin::Float64
+    x0::Vector{Float64}
+    horizon::Int
 end
 
 """
@@ -43,7 +78,7 @@ Constructor for `ForwardTrajectory`.
 # Returns:
 - `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
 """
-function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
+function ForwardTrajectoryWithMOGP(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
 
@@ -54,15 +89,10 @@ function ForwardTrajectory(; base_surrogate::AbstractSurrogate, start::AbstractV
 
     jacobians = [Matrix{Float64}(I(d))]
 
-    return ForwardTrajectory(base_surrogate, fsur, mfsur, jacobians, fmin, start, horizon)
+    return ForwardTrajectoryWithMOGP(base_surrogate, fsur, mfsur, jacobians, fmin, start, horizon)
 end
 
-
-get_starting_point(T::ForwardTrajectory) = T.x0
-get_base_surrogate(T::ForwardTrajectory) = T.s
-get_fantasy_surrogate(T::ForwardTrajectory) = T.fs
-get_horizon(T::ForwardTrajectory) = T.h
-get_minimum(T::ForwardTrajectory) = T.fmin
+get_minimum(T::ForwardTrajectoryWithMOGP) = T.fmin
 
 """
 A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in the system.
@@ -79,14 +109,12 @@ A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in th
 - `AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `AdjointTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
 """
 mutable struct AdjointTrajectory <: AbstractTrajectory
-    s::AbstractSurrogate
-    fs::AbstractFantasySurrogate
-    fmin::Real
-    x0::AbstractVector
-    θ::AbstractVector
-    h::Integer
+    s::Surrogate
+    fs::FantasySurrogate
+    x0::Vector{Float64}
+    θ::Vector{Float64}
+    horizon::Int
     observable::Union{Missing, AbstractObservable}
-    cost::AbstractCostFunction
 end
 
 
@@ -108,16 +136,16 @@ Create an `AdjointTrajectory` object using a base surrogate model, a starting po
 - The `observable` is initialized as `nothing` and should be set later.
 """
 function AdjointTrajectory(;
-    base_surrogate::AbstractSurrogate,
-    start::AbstractVector,
-    hypers::AbstractVector,
-    horizon::Integer,
-    cost::AbstractCostFunction = UniformCost())
-    fmin = minimum(get_observations(base_surrogate))
+    base_surrogate::Surrogate,
+    start::Vector{T},
+    hypers::Vector{T},
+    horizon::Int) where T <: Real
     d, N = size(get_covariates(base_surrogate))
     fsur = FantasySurrogate(base_surrogate, horizon)
+
     observable = missing
-    return AdjointTrajectory(base_surrogate, fsur, fmin, start, hypers, horizon, observable, cost)
+
+    return AdjointTrajectory(base_surrogate, fsur, start, hypers, horizon, observable)
 end
 
 """
@@ -128,13 +156,8 @@ fantasized samples, which is created once the AdjointTrajectory struct is create
 attach the observable after the fact.
 """
 attach_observable!(AT::AdjointTrajectory, observable::AbstractObservable) = AT.observable = observable
-get_observable(T::AdjointTrajectory) = T.observable
-get_starting_point(T::AdjointTrajectory) = T.x0
-get_base_surrogate(T::AdjointTrajectory) = T.s
-get_fantasy_surrogate(T::AdjointTrajectory) = T.fs
-get_cost_function(T::AdjointTrajectory) = T.cost
+get_observable(AT::AdjointTrajectory) = AT.observable
 get_hyperparameters(T::AdjointTrajectory) = T.θ
-get_horizon(T::AdjointTrajectory) = T.horizon
 get_minimum(T::AdjointTrajectory) = T.fmin
 
 """
@@ -145,13 +168,13 @@ in the surrogate at the initial point.
 that of the minimum from the best value known from the known locations.
 """
 Base.@kwdef mutable struct TrajectoryParameters
-    x0::AbstractVector
-    horizon::Integer
-    mc_iters::Integer
-    rnstream_sequence::AbstractArray{<:Real, 3}
-    spatial_lbs::AbstractVector
-    spatial_ubs::AbstractVector
-    θ::AbstractVector
+    x0::Vector{Float64}
+    horizon::Int
+    mc_iters::Int
+    rnstream_sequence::Array{Float64, 3}
+    spatial_lbs::Vector{Float64}
+    spatial_ubs::Vector{Float64}
+    θ::Vector{Float64}
 
     function TrajectoryParameters(x0, horizon, mc_iters, rnstream, slbs, subs, θ)
         function check_dimensions(x0, lbs, ubs)
@@ -173,13 +196,13 @@ Base.@kwdef mutable struct TrajectoryParameters
 end
 
 function TrajectoryParameters(;
-    start::AbstractVector,
-    hypers::AbstractVector,
-    horizon::Integer,
-    mc_iterations::Integer,
+    start::Vector{T},
+    hypers::Vector{T},
+    horizon::Int,
+    mc_iterations::Int,
     use_low_discrepancy_sequence::Bool,
-    spatial_lowerbounds::AbstractVector,
-    spatial_upperbounds::AbstractVector)
+    spatial_lowerbounds::Vector{T},
+    spatial_upperbounds::Vector{T}) where T <: Real
     if use_low_discrepancy_sequence
         rns = gen_low_discrepancy_sequence(mc_iterations, length(spatial_lowerbounds), horizon + 1)
     else

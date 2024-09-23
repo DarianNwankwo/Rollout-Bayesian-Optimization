@@ -2,17 +2,27 @@ import Base:+, *
 # https://www.sfu.ca/~ssurjano/optimization.html
 # https://en.wikipedia.org/wiki/Test_functions_for_optimization
 
-struct TestFunction
-    dim::Integer
-    bounds::AbstractMatrix
-    xopt::NTuple{N, AbstractVector{<:Real}} where N
-    f::Function
-    ∇f::Function
+# struct TestFunction
+#     dim::Integer
+#     bounds::AbstractMatrix
+#     xopt::NTuple{N, AbstractVector{<:Real}} where N
+#     f::Function
+#     ∇f::Function
+# end
+struct TestFunction{T <: Real, N, F, G}
+    dim::Int                      # Dimension (remains as Int)
+    bounds::Matrix{T}             # Matrix with elements of type T <: Real
+    xopt::NTuple{N, Vector{T}}    # N-tuple of vectors with elements of type T
+    f::F                          # Function (generic, remains as F)
+    ∇f::G                         # Gradient function (generic, remains as G)
 end
 
-(testfn::TestFunction)(x::Vector{Float64}) = testfn.f(x)
+
+(testfn::TestFunction)(x::Vector{T}) where T <: Real = testfn.f(x)
 gradient(testfn::TestFunction) = testfn.∇f
-function (testfn::TestFunction)(X::AbstractMatrix; grad=false)
+
+# Apply the function or its gradient to each column of the matrix
+function (testfn::TestFunction)(X::Matrix{T}; grad=false) where T <: Real
     return map(
         !grad ? testfn.f : testfn.∇f,
         eachcol(X)
@@ -21,7 +31,7 @@ end
 
 
 function get_collapsed_bounds(t1::TestFunction, t2::TestFunction)
-    closest_to_origin(x::AbstractVector) = x[findmin(abs, x)[2]]
+    closest_to_origin(x::Vector{T}) where T <: Real = x[findmin(abs, x)[2]]
 
     bounds = zeros(t1.dim, 2)
     union_lowerbounds = [t1.bounds[:, 1] t2.bounds[:, 1]]
@@ -59,28 +69,28 @@ function *(t1::TestFunction, t2::TestFunction)
 end
 
 
-function scalar_scale(testfn::TestFunction, s::Number)
-    function f(x)
-        return testfn.f(x/s)
+function scalar_scale(testfn::TestFunction, s::T) where T <: Number
+    function f(x::Vector{T})
+        return testfn.f(x / s)
     end
-    function ∇f(x)
-        return testfn.∇f(x/s) / s
+    function ∇f(x::Vector{T})
+        return testfn.∇f(x / s) / s
     end
-    return TestFunction(testfn.dim, testfn.bounds*s, testfn.xopt .* s, f, ∇f)
+    return TestFunction(testfn.dim, testfn.bounds * s, testfn.xopt .* s, f, ∇f)
 end
 
 
-function vshift(testfn::TestFunction, s::Number)
-    function f(x)
+function vshift(testfn::TestFunction, s::T) where T <: Number
+    function f(x::Vector{T})
         return testfn.f(x) + s
     end
-    function ∇f(x)
+    function ∇f(x::Vector{T})
         return testfn.∇f(x)
     end
     return TestFunction(testfn.dim, testfn.bounds, testfn.xopt, f, ∇f)
 end
 
-function hshift(testfn::TestFunction, s::AbstractVector)
+function hshift(testfn::TestFunction, s::Vector{T}) where T <: Number
     function f(x)
         return testfn.f(x + s)
     end
@@ -93,7 +103,7 @@ end
 get_bounds(t::TestFunction) = (t.bounds[:, 1], t.bounds[:, 2])
 
 
-function tplot(f :: TestFunction)
+function tplot(f::TestFunction)
     if f.dim == 1
         xx = range(f.bounds[1,1], f.bounds[1,2], length=250)
         p = plot(xx, (x) -> f([x]), label="f(x)")

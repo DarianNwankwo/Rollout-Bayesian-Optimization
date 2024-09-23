@@ -84,9 +84,9 @@ function randsample(N, d, lbs, ubs)
 end
 
 
-function stdize(series)
+function stdize(series; a=0, b=1)
     smax, smin = maximum(series), minimum(series)
-    return [(s-smin)/(smax-smin) for s in series]
+    return [a + (s - smin) / (smax - smin) * (b - a) for s in series]
 end
 
 function pairwise_diff_issmall(prev, next; tol=1e-6)

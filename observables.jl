@@ -14,6 +14,7 @@ function increment!(o::AbstractObservable)
     o.step += 1
     return nothing
 end
+
 """ 
 A mutable struct `StochasticObservable` that represents an observable 
 which produces stochastic observations and their gradients.
@@ -30,21 +31,20 @@ which produces stochastic observations and their gradients.
 - `StochasticObservable(fs, stdnormal, trajectory_length)`: Creates a new instance of `StochasticObservable` with the given surrogate model, standard normal variables, and trajectory length.
 
 """
-mutable struct StochasticObservable <: AbstractObservable
-    fs::AbstractFantasySurrogate
-    stdnormal::AbstractMatrix
-    trajectory_length::Integer
-    step::Integer
-    observations::AbstractVector{<:Real}
-    gradients::AbstractMatrix{<:Real}
-    # hyperparameters::AbstractMatrix{<:Real}
+mutable struct StochasticObservable{FS <: AbstractFantasySurrogate} <: AbstractObservable
+    fs::FS
+    stdnormal::Matrix{Float64}
+    trajectory_length::Int
+    step::Int
+    observations::Vector{Float64}
+    gradients::Matrix{Float64}
 
     function StochasticObservable(; surrogate, stdnormal, max_invocations)
         dim = size(stdnormal, 1) - 1
         invocations = size(stdnormal, 2)
         observations = zeros(invocations)
         gradients = zeros(dim, invocations)
-        return new(surrogate, stdnormal, max_invocations, 0, observations, gradients)
+        return new{typeof(surrogate)}(surrogate, stdnormal, max_invocations, 0, observations, gradients)
     end
 end
 
@@ -59,10 +59,21 @@ its corresponding gradient for a given input vector `x`.
 - `observation`: The generated observation for the input `x`.
 
 """
-function (so::StochasticObservable)(x::AbstractVector, θ::AbstractVector)::Number
+function (so::StochasticObservable{FS})(x::Vector{T}, θ::Vector{T})::Number where {T <: Real, FS <: FantasySurrogate}
     @assert so.step < so.trajectory_length "Maximum invocations have been used"
     observation, gradient_... = gp_draw(
         so.fs, x, θ, stdnormal=so.stdnormal[:, so.step + 1], fantasy_index=so.step - 1, with_gradient=true
+    )
+    increment!(so)
+    update!(so, observation, gradient_)
+
+    return observation
+end
+
+function (so::StochasticObservable{FS})(x::Vector{T})::Number where {T <: Real, FS <: FantasyRBFsurrogate}
+    @assert so.step < so.trajectory_length "Maximum invocations have been used"
+    observation, gradient_... = gp_draw(
+        so.fs, x, stdnormal=so.stdnormal[:, so.step + 1], with_gradient=true
     )
     increment!(so)
     update!(so, observation, gradient_)
@@ -86,14 +97,14 @@ which produces deterministic observations and their gradients.
 
 """
 mutable struct DeterministicObservable <: AbstractObservable
-    f::Function
-    ∇f::Function
-    trajectory_length::Integer
-    step::Integer
-    observations::AbstractVector{<:Real}
-    gradients::AbstractMatrix{<:Real}
+    f
+    ∇f
+    trajectory_length::Int
+    step::Int
+    observations::Vector{Float64}
+    gradients::Matrix{Float64}
 
-    function DeterministicObservable(; func::Function, gradient::Function, max_invocations::Integer)
+    function DeterministicObservable(; func::Function, gradient::Function, max_invocations::Int)
         dim = testfn.dim
         observations = zeros(max_invocations)
         gradients = zeros(dim, max_invocations)
@@ -117,7 +128,7 @@ in terms of spatial coordinates and hyperparameters.
 - `observation`: The generated observation for the input `x`.
 
 """
-function (deo::DeterministicObservable)(x::AbstractVector, θ::AbstractVector)::Number
+function (deo::DeterministicObservable)(x::Vector{T}, θ::Vector{T})::Number where T <: Real
     @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
     observation = eval(deo)(x)
     gradient_ = gradient(deo)(x)
@@ -125,3 +136,14 @@ function (deo::DeterministicObservable)(x::AbstractVector, θ::AbstractVector)::
     update!(deo, observation, gradient_)
     return observation
 end
+
+function (deo::DeterministicObservable)(x::Vector{T})::Number where T <: Real
+    @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
+    observation = eval(deo)(x)
+    gradient_ = gradient(deo)(x)
+    increment!(deo)
+    update!(deo, observation, gradient_)
+    return observation
+end
+
+get_gradient(o::AbstractObservable; at::Int) = o.gradients[:, at]
