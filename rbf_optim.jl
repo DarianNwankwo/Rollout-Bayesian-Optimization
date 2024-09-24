@@ -20,11 +20,11 @@ end
 
 function base_solve(
     fantasy_surrogate::FantasySurrogate;
-    spatial_lbs::AbstractVector,
-    spatial_ubs::AbstractVector,
-    xstart::AbstractVector,
-    θfixed::AbstractVector,
-    fantasy_index::Int)
+    spatial_lbs::Vector{T},
+    spatial_ubs::Vector{T},
+    xstart::Vector{T},
+    θfixed::Vector{T},
+    fantasy_index::Int) where T <: Real
 
     function fun(x)
         fantasy_surrogate_at_xθ = fantasy_surrogate(x, θfixed, fantasy_index=fantasy_index)
@@ -108,17 +108,18 @@ function multistart_ei_solve(s::FantasyRBFsurrogate, lbs::Vector{Float64},
 end
 
 
-function multistart_base_solve(
-    fantasy_surrogate::FantasySurrogate;
+function multistart_base_solve!(
+    fantasy_surrogate::FantasySurrogate,
+    xfinal::Vector{T};
     spatial_lbs::Vector{T},
     spatial_ubs::Vector{T},
-    xstarts::Matrix{T},
+    guesses::Matrix{T},
     θfixed::Vector{T},
     fantasy_index::Int) where T <: Real
     candidates = []
     
-    for i in 1:size(xstarts, 2)
-        xi = xstarts[:,i]
+    for i in 1:size(guesses, 2)
+        xi = guesses[:, i]
 
         minimizer, res = base_solve(
             fantasy_surrogate,
@@ -133,21 +134,22 @@ function multistart_base_solve(
     
     candidates = filter(pair -> !any(isnan.(pair[1])), candidates)
     mini, j_mini = findmin(pair -> pair[2], candidates)
-    minimizer = candidates[j_mini][1]
+    xfinal .= candidates[j_mini][1]
 
-    return minimizer
+    return nothing
 end
 
-function multistart_base_solve(
-    surrogate::Surrogate;
+function multistart_base_solve!(
+    surrogate::Surrogate,
+    xfinal::Vector{T};
     spatial_lbs::Vector{T},
     spatial_ubs::Vector{T},
-    xstarts::Matrix{T},
+    guesses::Matrix{T},
     θfixed::Vector{T}) where T <: Real
     candidates = []
     
-    for i in 1:size(xstarts, 2)
-        xi = xstarts[:,i]
+    for i in 1:size(guesses, 2)
+        xi = guesses[:, i]
 
         minimizer, res = base_solve(
             surrogate,
@@ -161,7 +163,7 @@ function multistart_base_solve(
     
     candidates = filter(pair -> !any(isnan.(pair[1])), candidates)
     mini, j_mini = findmin(pair -> pair[2], candidates)
-    minimizer = candidates[j_mini][1]
+    xfinal .= candidates[j_mini][1]
 
-    return Vector{Float64}(minimizer)
+    return nothing
 end

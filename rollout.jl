@@ -210,12 +210,13 @@ function rollout!(
     # Perform rollout for fantasized trajectories
     for j in 1:get_horizon(T)
         # Solve base acquisition function to determine next sample location
-        xnext .= multistart_base_solve(
+        multistart_base_solve!(
             get_fantasy_surrogate(T),
+            xnext,
             spatial_lbs=lowerbounds,
             spatial_ubs=upperbounds,
             θfixed=get_hyperparameters(T),
-            xstarts=xstarts,
+            guesses=xstarts,
             fantasy_index=j-1,
         )
 
@@ -223,7 +224,7 @@ function rollout!(
         fi = get_observation(xnext, get_hyperparameters(T))
        
         # Update surrogate and cache the gradient of the posterior mean field
-        condition!(T.fs, xnext, fi)
+        condition!(get_fantasy_surrogate(T), xnext, fi)
     end
 end
 
@@ -603,7 +604,7 @@ function simulate_forward_trajectory(
 end
 
 # function simulate_adjoint_trajectory
-function deterministic_simulate_trajectory(
+function simulate_adjoint_trajectory(
     s::Surrogate,
     tp::TrajectoryParameters;
     inner_solve_xstarts::AbstractMatrix,
@@ -644,17 +645,16 @@ function simulate_adjoint_trajectory(
     resolutions::AbstractVector,
     spatial_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
     hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing)
-    deepcopy_s = Base.deepcopy(s)
     slbs, subs = get_spatial_bounds(tp)
+    T = AdjointTrajectory(
+        base_surrogate=s,
+        start=get_starting_point(tp),
+        hypers=get_hyperparameters(tp),
+        horizon=get_horizon(tp)
+    )
 
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
-        T = AdjointTrajectory(
-            base_surrogate=deepcopy_s,
-            start=get_starting_point(tp),
-            hypers=get_hyperparameters(tp),
-            horizon=get_horizon(tp)
-        )
         sampler = StochasticObservable(
             surrogate=get_fantasy_surrogate(T), 
             stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
@@ -677,6 +677,8 @@ function simulate_adjoint_trajectory(
             spatial_gradients_container[:, sample_index] = ∇x
             hyperparameter_gradients_container[:, sample_index] = ∇θ
         end
+
+        reset!(get_fantasy_surrogate(T))
     end
 
     μxθ = Distributions.mean(resolutions)

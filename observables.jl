@@ -33,6 +33,9 @@ mutable struct StochasticObservable{FS <: AbstractFantasySurrogate} <: AbstractO
     end
 end
 
+reset!(so::StochasticObservable) = so.step = 0
+set_sequence!(so::StochasticObservable, rnstream::Matrix{T}) where T <: Real = so.stdnormal = rnstream
+
 
 function (so::StochasticObservable{FS})(x::Vector{T}, θ::Vector{T})::Number where {T <: Real, FS <: FantasySurrogate}
     @assert so.step < so.trajectory_length "Maximum invocations have been used"

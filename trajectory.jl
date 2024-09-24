@@ -117,14 +117,6 @@ get_observable(AT::AdjointTrajectory) = AT.observable
 get_hyperparameters(T::AdjointTrajectory) = T.θ
 
 
-"""
-Consider giving the perturbed surrogate a zero matrix to handle computing variations
-in the surrogate at the initial point.
-
-- TODO: Fix the logic associated with maintaining the minimum found along the sample path vs.
-that of the minimum from the best value known from the known locations.
-"""
-# Base.@kwdef mutable struct TrajectoryParameters
 struct TrajectoryParameters
     x0::Vector{Float64}
     horizon::Int
@@ -179,7 +171,7 @@ function TrajectoryParameters(;
 end
 
 get_spatial_bounds(tp::TrajectoryParameters) = (tp.spatial_lbs, tp.spatial_ubs)
-each_trajectory(tp::TrajectoryParameters) = 1:tp.mc_iters
+each_trajectory(tp::TrajectoryParameters; start::Int = 1) = start:tp.mc_iters
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
 get_starting_point(tp::TrajectoryParameters) = tp.x0
 get_hyperparameters(tp::TrajectoryParameters) = tp.θ
