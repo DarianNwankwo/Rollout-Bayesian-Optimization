@@ -67,17 +67,7 @@ mutable struct ForwardTrajectoryWithMOGP <: AbstractTrajectory
     horizon::Int
 end
 
-"""
-Constructor for `ForwardTrajectory`.
 
-# Arguments:
-- `s::RBFsurrogate`: The RBF surrogate model to be used in the trajectory.
-- `x0::Vector{Float64}`: The starting point of the trajectory.
-- `h::Int`: The number of steps (or horizon) for the trajectory.
-
-# Returns:
-- `ForwardTrajectory`: A new instance of `ForwardTrajectory` with initialized fields.
-"""
 function ForwardTrajectoryWithMOGP(; base_surrogate::AbstractSurrogate, start::AbstractVector, horizon::Integer)
     fmin = minimum(get_observations(base_surrogate))
     d, N = size(get_covariates(base_surrogate))
@@ -92,22 +82,7 @@ function ForwardTrajectoryWithMOGP(; base_surrogate::AbstractSurrogate, start::A
     return ForwardTrajectoryWithMOGP(base_surrogate, fsur, mfsur, jacobians, fmin, start, horizon)
 end
 
-get_minimum(T::ForwardTrajectoryWithMOGP) = T.fmin
 
-"""
-A mutable struct `AdjointTrajectory` that represents an adjoint trajectory in the system.
-
-# Fields:
-- `s::RBFsurrogate`: The RBF surrogate model used in the trajectory.
-- `fs::SmartFantasyRBFsurrogate`: The smart fantasy RBF surrogate model used in the trajectory.
-- `fmin::Float64`: The minimum function value observed.
-- `x0::Vector{Float64}`: The starting point of the trajectory.
-- `h::Int`: The number of steps (or horizon) for the trajectory.
-- `observable::Union{Nothing, Observable}`: An observable associated with the trajectory, if any.
-
-# Constructor:
-- `AdjointTrajectory(s::RBFsurrogate, x0::Vector{Float64}, h::Int)`: Creates a new instance of `AdjointTrajectory` by fitting the necessary surrogate models and initializing the trajectory.
-"""
 mutable struct AdjointTrajectory <: AbstractTrajectory
     s::Surrogate
     fs::FantasySurrogate
@@ -117,24 +92,6 @@ mutable struct AdjointTrajectory <: AbstractTrajectory
     observable::Union{Missing, AbstractObservable}
 end
 
-
-"""
-Create an `AdjointTrajectory` object using a base surrogate model, a starting point, and a specified time horizon.
-
-# Arguments
-- `base_surrogate::Surrogate`: The base surrogate model used to generate the adjoint trajectory.
-- `start::AbstractVector`: The initial starting point for the trajectory.
-- `horizon::Int`: The time horizon or number of steps for the trajectory.
-
-# Returns
-- `AdjointTrajectory`: An instance of `AdjointTrajectory` initialized with the provided surrogate model, starting point, and time horizon.
-
-# Details
-- The function first computes the minimum value (`fmin`) of the observations from the `base_surrogate`.
-- It then determines the dimensionality (`d`) and the number of observations (`N`) from the covariates of the `base_surrogate`.
-- A smart fantasy surrogate (`fsur`) is fitted based on the `base_surrogate` and the given `horizon`.
-- The `observable` is initialized as `nothing` and should be set later.
-"""
 function AdjointTrajectory(;
     base_surrogate::Surrogate,
     start::Vector{T},
@@ -158,7 +115,7 @@ attach the observable after the fact.
 attach_observable!(AT::AdjointTrajectory, observable::AbstractObservable) = AT.observable = observable
 get_observable(AT::AdjointTrajectory) = AT.observable
 get_hyperparameters(T::AdjointTrajectory) = T.θ
-get_minimum(T::AdjointTrajectory) = T.fmin
+
 
 """
 Consider giving the perturbed surrogate a zero matrix to handle computing variations
@@ -167,7 +124,8 @@ in the surrogate at the initial point.
 - TODO: Fix the logic associated with maintaining the minimum found along the sample path vs.
 that of the minimum from the best value known from the known locations.
 """
-Base.@kwdef mutable struct TrajectoryParameters
+# Base.@kwdef mutable struct TrajectoryParameters
+struct TrajectoryParameters
     x0::Vector{Float64}
     horizon::Int
     mc_iters::Int

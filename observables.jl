@@ -15,22 +15,7 @@ function increment!(o::AbstractObservable)
     return nothing
 end
 
-""" 
-A mutable struct `StochasticObservable` that represents an observable 
-which produces stochastic observations and their gradients.
-    
-# Fields:
-- `fs::SmartFantasyRBFsurrogate`: The surrogate model used to generate observations.
-- `stdnormal::AbstractMatrix`: A matrix of standard normal variables used for generating the stochastic observations.
-- `trajectory_length::Int64`: The maximum number of steps (or invocations) allowed.
-- `step::Int64`: The current step or invocation count.
-- `observations::Vector{Float64}`: A vector to store the observations generated.
-- `gradients::Matrix{Float64}`: A matrix to store the gradients corresponding to the observations.
 
-# Constructor:
-- `StochasticObservable(fs, stdnormal, trajectory_length)`: Creates a new instance of `StochasticObservable` with the given surrogate model, standard normal variables, and trajectory length.
-
-"""
 mutable struct StochasticObservable{FS <: AbstractFantasySurrogate} <: AbstractObservable
     fs::FS
     stdnormal::Matrix{Float64}
@@ -48,17 +33,7 @@ mutable struct StochasticObservable{FS <: AbstractFantasySurrogate} <: AbstractO
     end
 end
 
-""" 
-Call operator for `StochasticObservable` which produces an observation and 
-its corresponding gradient for a given input vector `x`.
-    
-# Arguments:
-- `x::AbstractVector`: The input vector for which the observation and gradient are generated.
 
-# Returns:
-- `observation`: The generated observation for the input `x`.
-
-"""
 function (so::StochasticObservable{FS})(x::Vector{T}, θ::Vector{T})::Number where {T <: Real, FS <: FantasySurrogate}
     @assert so.step < so.trajectory_length "Maximum invocations have been used"
     observation, gradient_... = gp_draw(
@@ -81,21 +56,7 @@ function (so::StochasticObservable{FS})(x::Vector{T})::Number where {T <: Real, 
     return observation
 end
 
-""" 
-A mutable struct `DeterministicObservable` that represents an observable 
-which produces deterministic observations and their gradients.
 
-# Fields:
-- `testfn::TestFunction`: The test function used to generate observations.
-- `trajectory_length::Int64`: The maximum number of steps (or invocations) allowed.
-- `step::Int64`: The current step or invocation count.
-- `observations::Vector{Float64}`: A vector to store the observations generated.
-- `gradients::Matrix{Float64}`: A matrix to store the gradients corresponding to the observations.
-
-# Constructor:
-- `DeterministicObservable(testfn, trajectory_length)`: Creates a new instance of `DeterministicObservable` with the given test function and trajectory length.
-
-"""
 mutable struct DeterministicObservable <: AbstractObservable
     f
     ∇f
@@ -115,19 +76,6 @@ end
 eval(o::DeterministicObservable) = o.f
 gradient(o::DeterministicObservable) = o.∇f
 
-""" 
-Call operator for `DeterministicObservable` which produces an observation 
-and its corresponding gradient for a given input vector `x`. The second argument
-is unused to fit our representation for our evaluating our acquisition function
-in terms of spatial coordinates and hyperparameters.
-
-# Arguments:
-- `x::AbstractVector`: The input vector for which the observation and gradient are generated.
-
-# Returns:
-- `observation`: The generated observation for the input `x`.
-
-"""
 function (deo::DeterministicObservable)(x::Vector{T}, θ::Vector{T})::Number where T <: Real
     @assert deo.step < deo.trajectory_length "Maximum invocations have been used"
     observation = eval(deo)(x)

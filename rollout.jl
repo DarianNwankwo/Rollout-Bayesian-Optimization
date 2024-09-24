@@ -52,7 +52,7 @@ function compute_policy_perturbation(
     # Placeholder for collecting all perturbations
     fantasy_begin_ndx = get_known_observations(fs) + 1
     ∇ys = [zeros(length(xnext)) for i in 1:total_observations]
-    ∇ys[fantasy_begin_ndx + j - 1] = T.observable.gradients[:, j]
+    ∇ys[fantasy_begin_ndx + j - 1] = get_gradient(get_observable(T), at=j)
 
     # Intermediate storage of each column computed in the current perturbation
     P = zeros(length(xnext), length(xnext))
