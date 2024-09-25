@@ -26,18 +26,6 @@ get_coefficients(afs::AbstractSurrogate) = afs.c
 get_cholesky(as::AbstractSurrogate) = as.L
 get_covariance(as::AbstractSurrogate) = as.K
 
-#TODO: Write a method for grabbing the rows and columns of matrix
-
-# struct Surrogate{RBF <: StationaryKernel, P <: AbstractDecisionRule} <: AbstractSurrogate
-#     ψ::RBF
-#     X::Matrix{Float64}
-#     K::Matrix{Float64}
-#     L::LowerTriangular{Float64, Matrix{Float64}}
-#     y::Vector{Float64}
-#     c::Vector{Float64}
-#     σn2::Float64
-#     g::P
-# end
 
 mutable struct Surrogate{RBF <: StationaryKernel, P <: AbstractDecisionRule} <: AbstractSurrogate
     ψ::RBF
@@ -54,7 +42,11 @@ end
 
 get_capacity(s::Surrogate) = s.capacity
 increment!(s::Surrogate) = s.observed += 1
-
+get_observed(s::Surrogate) = s.observed
+is_full(s::Surrogate) = get_observed(s) == get_capacity(s)
+get_active_covariates(s) = @view get_covariates(s)[:, 1:get_observed(s)]
+get_active_cholesky(s) = @view get_cholesky(s)[1:get_observed(s), 1:get_observed(s)]
+get_active_covariance(s) = @view get_covariance(s)[1:get_observed(s), 1:get_observed(s)]
 
 # Define the custom show method for Surrogate
 function Base.show(io::IO, s::Surrogate{RBF, P}) where {RBF, P}
@@ -66,19 +58,6 @@ function Base.show(io::IO, s::Surrogate{RBF, P}) where {RBF, P}
 end
 
 get_decision_rule(s::Surrogate) = s.g
-
-# function Surrogate(
-#     ψ::RadialBasisFunction,
-#     X::Matrix{T},
-#     y::Vector{T};
-#     decision_rule::AbstractDecisionRule = EI(),
-#     σn2::T = 1e-6) where T <: Real
-#     d, N = size(X)
-#     K = eval_KXX(ψ, X, σn2=σn2)
-#     L = cholesky(Hermitian(K)).L
-#     c = L'\(L\y)
-#     return Surrogate(ψ, X, K, L, y, c, σn2, decision_rule)
-# end
 
 function Surrogate(
     ψ::RadialBasisFunction,
@@ -133,10 +112,6 @@ function resize(s::Surrogate)
     )
 end
 
-get_observed(s::Surrogate) = s.observed
-get_capacity(s::Surrogate) = s.capacity
-is_full(s::Surrogate) = get_observed(s) == get_capacity(s)
-
 function insert!(s::Surrogate, x::Vector{T}, y::T) where T <: Real
     insert_index = get_observed(s) + 1
     s.X[:, insert_index] = x
@@ -187,40 +162,6 @@ function condition!(s::Surrogate, xnew::Vector{T}, ynew::T) where T <: Real
     update_cholesky!(s)
     update_coefficients!(s)
     return s
-end
-
-function condition(s::Surrogate, xnew::Vector{T}, ynew::T) where T <: Real
-    X = hcat(s.X, xnew)
-    y = vcat(s.y, ynew)
-
-    # Update covariance matrix and it's cholesky factorization
-    KxX = eval_KxX(s.ψ, xnew, s.X)
-    K = [s.K  KxX
-         KxX' eval_KXX(s.ψ, reshape(xnew, length(xnew), 1), σn2=s.σn2)]
-    
-    function update_cholesky(K::Matrix{Float64}, L::LowerTriangular{Float64, Matrix{Float64}})
-        # Grab entries from update covariance matrix
-        n = size(K, 1)
-        B = @view K[n:n, 1:n-1]
-        C = K[n, n]
-        
-        # Compute the updated factorizations using schur complements
-        L21 = B / L'
-        L22 = sqrt(C - first(L21*L21'))
-    
-        # Update the full factorization
-        ufK = zeros(n, n)
-        ufK[1:n-1, 1:n-1] .= L
-        ufK[n:n, 1:n-1] .= L21
-        ufK[n, n] = L22
-    
-        return LowerTriangular(ufK)
-    end
-
-    L = update_cholesky(K, s.L)
-    c = L'\(L\y)
-
-    return Surrogate(s.ψ, X, K, L, y, c, s.σn2, s.g)
 end
 
 function eval(
@@ -380,7 +321,6 @@ end
 #     return sx
 # end
 
-# (s::Surrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ)
 (s::Surrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ)
 eval(sx) = sx.αxθ
 gradient(sx; wrt_hypers=false) = wrt_hypers ? sx.∇αθ : sx.∇αx
@@ -414,6 +354,7 @@ end
 
 
 function FantasySurrogate(s::Surrogate, horizon::Int)
+    
     N = get_observed(s)
     d = size(s.X, 1)
     K = zeros(N+horizon+1, N+horizon+1)
