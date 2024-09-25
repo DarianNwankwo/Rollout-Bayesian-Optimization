@@ -307,15 +307,11 @@ function gradient(T::ForwardTrajectory)
     fmini = minimum(y)
     best_ndx, best_step = best(T)
     xb, fb = best_step
-    ∇fb = T.observable.gradients[:, best_ndx + 1]
+    ∇fb = get_gradient(get_observable(T), at=best_ndx + 1)
 
-    if fmini <= fb
-        return zeros(length(xb))
-    end
+    if fmini <= fb return zeros(length(xb)) end
 
-    if best_ndx == 0
-        return -∇fb
-    end
+    if best_ndx == 0 return -∇fb end
     
     opt_jacobian = T.jacobians[best_ndx + 1]
     return transpose(-∇fb'*opt_jacobian)
@@ -457,8 +453,9 @@ function gradient(T::AdjointTrajectory)
         if observable isa DeterministicObservable
             return (∇x=-get_gradient(observable, at=t+1), ∇θ=zeros(θdim))
         elseif observable isa StochasticObservable
-            sx = recover_policy_solve(T, solve_index=1)
-            return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
+            # sx = recover_policy_solve(T, solve_index=1)
+            # return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
+            return (∇x=-get_gradient(observable, at=t+1), ∇θ=zeros(θdim))
         else
             error("Unsupported observable type")
         end
