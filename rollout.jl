@@ -644,7 +644,66 @@ function simulate_adjoint_trajectory(
     hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing)
     slbs, subs = get_spatial_bounds(tp)
     T = AdjointTrajectory(
-        base_surrogate=s,
+        s,
+        start=get_starting_point(tp),
+        hypers=get_hyperparameters(tp),
+        horizon=get_horizon(tp)
+    )
+
+    for sample_index in each_trajectory(tp)
+        # Rollout trajectory
+        sampler = StochasticObservable(
+            surrogate=get_fantasy_surrogate(T), 
+            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
+            max_invocations=get_horizon(tp) + 1
+        )
+        attach_observable!(T, sampler)
+
+        rollout!(
+            T,
+            lowerbounds=slbs,
+            upperbounds=subs,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts
+        )
+
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
+        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
+            ∇x, ∇θ = gradient(T)
+            spatial_gradients_container[:, sample_index] = ∇x
+            hyperparameter_gradients_container[:, sample_index] = ∇θ
+        end
+
+        reset!(get_fantasy_surrogate(T))
+    end
+
+    μxθ = Distributions.mean(resolutions)
+    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
+    
+    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
+        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
+    else
+        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
+        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
+        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
+        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
+        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
+    end
+end
+
+function simulate_adjoint_trajectory(
+    s::Surrogate,
+    fs::FantasySurrogate,
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::Matrix{T1},
+    resolutions::Vector{T1},
+    spatial_gradients_container::Union{Nothing, Matrix{T1}} = nothing,
+    hyperparameter_gradients_container::Union{Nothing, Matrix{T1}} = nothing) where T1 <: Real
+    slbs, subs = get_spatial_bounds(tp)
+    T = AdjointTrajectory(
+        s,
+        fs,
         start=get_starting_point(tp),
         hypers=get_hyperparameters(tp),
         horizon=get_horizon(tp)

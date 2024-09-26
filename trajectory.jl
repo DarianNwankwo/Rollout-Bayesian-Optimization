@@ -92,8 +92,8 @@ mutable struct AdjointTrajectory <: AbstractTrajectory
     observable::Union{Missing, AbstractObservable}
 end
 
-function AdjointTrajectory(;
-    base_surrogate::Surrogate,
+function AdjointTrajectory(
+    base_surrogate::Surrogate;
     start::Vector{T},
     hypers::Vector{T},
     horizon::Int) where T <: Real
@@ -103,6 +103,17 @@ function AdjointTrajectory(;
     observable = missing
 
     return AdjointTrajectory(base_surrogate, fsur, start, hypers, horizon, observable)
+end
+
+function AdjointTrajectory(
+    base_surrogate::Surrogate,
+    fantasy_surrogate::FantasySurrogate;
+    start::Vector{T},
+    hypers::Vector{T},
+    horizon::Int) where T <: Real
+    d, N = size(get_covariates(base_surrogate))
+    observable = missing
+    return AdjointTrajectory(base_surrogate, fantasy_surrogate, start, hypers, horizon, observable)
 end
 
 """

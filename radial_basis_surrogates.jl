@@ -132,26 +132,30 @@ end
 
 function update_cholesky!(s::Surrogate)
     # Grab entries from update covariance matrix
-    n = get_observed(s)
-    B = @view s.K[n:n, 1:n-1]
-    C = @view s.K[n, n]
-    L = @view s.L[1:n-1, 1:n-1]
-    
-    # Compute the updated factorizations using schur complements
-    L21 = B / L'
-    L22 = cholesky(C - L21*L21').L
+    @views begin
+        n = get_observed(s)
+        B = s.K[n:n, 1:n-1]
+        C = s.K[n, n]
+        L = s.L[1:n-1, 1:n-1]
+        
+        # Compute the updated factorizations using schur complements
+        L21 = B / L'
+        L22 = cholesky(C - L21*L21').L
 
-    # Update the full factorization
-    for j in 1:n-1
-        s.L[n, j] = L21[1, j]
+        # Update the full factorization
+        for j in 1:n-1
+            s.L[n, j] = L21[1, j]
+        end
+        s.L[n, n] = L22[1, 1]
     end
-    s.L[n, n] = L22[1, 1]
 end
 
 function update_coefficients!(s)
     update_index = get_observed(s)
-    L = @view s.L[1:update_index, 1:update_index]
-    s.c[1:update_index] = L' \ (L \ s.y[1:update_index])
+    @views begin
+        L = s.L[1:update_index, 1:update_index]
+        s.c[1:update_index] = L' \ (L \ s.y[1:update_index])
+    end
 end
 
 function condition!(s::Surrogate, xnew::Vector{T}, ynew::T) where T <: Real
@@ -189,9 +193,11 @@ function eval(
     sx.∇μ = () -> sx.∇kx * c
     sx.dμ = () -> vcat(sx.μ, sx.∇μ)
     sx.Hμ = function()
-        H = zeros(d, d)
-        for j = 1:N
-            H += c[j] * eval_Hk(s.ψ, x-X[:,j])
+        @views begin
+            H = zeros(d, d)
+            for j = 1:N
+                H += c[j] * eval_Hk(s.ψ, x-X[:,j])
+            end
         end
         return H
     end
@@ -211,8 +217,10 @@ function eval(
     sx.Hσ = function()
         H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
         w = sx.w
-        for j = 1:N
-            H -= w[j] * eval_Hk(s.ψ, x-X[:,j])
+        @views begin
+            for j = 1:N
+                H -= w[j] * eval_Hk(s.ψ, x-X[:,j])
+            end
         end
         H /= sx.σ
         return H
@@ -380,43 +388,45 @@ function FantasySurrogate(s::Surrogate, horizon::Int)
     )
 end
 
+function update_cholesky(K::AbstractMatrix{T}, L::AbstractMatrix{T}) where T <: Real
+    # Grab entries from update covariance matrix
+    n = size(K, 1)
+    B = @view K[n:n, 1:n-1]
+    C = K[n, n]
+    
+    # Compute the updated factorizations using schur complements
+    L21 = B / L'
+    L22 = sqrt(C - first(L21*L21'))
+
+    return L21, L22
+end
+
 function condition!(fs::FantasySurrogate, xnew::Vector{T}, ynew::T) where T <: Real
     @assert fs.fantasies_observed < fs.h + 1
-    update_ndx = fs.known_observed + fs.fantasies_observed + 1
-    # We can use the same logic here for preallocating space for X
-    fs.X[:, update_ndx] = xnew
-    fs.y = vcat(fs.y, ynew)
+    @views begin
+        update_ndx = fs.known_observed + fs.fantasies_observed + 1
+        # We can use the same logic here for preallocating space for X
+        fs.X[:, update_ndx] = xnew
+        fs.y = vcat(fs.y, ynew)
 
-    # Update covariance matrix and it's cholesky factorization
-    KxX = eval_KxX(fs.ψ, xnew, fs.X[:, 1:update_ndx-1])
-    fs.K[update_ndx, 1:update_ndx-1] = KxX
-    fs.K[1:update_ndx-1, update_ndx] = KxX'
-    fs.K[update_ndx, update_ndx] = first(eval_KXX(fs.ψ, reshape(xnew, length(xnew), 1), σn2=fs.σn2))
-    
-    function update_cholesky(K::Matrix{Float64}, L::Matrix{Float64})
-        # Grab entries from update covariance matrix
-        n = size(K, 1)
-        B = @view K[n:n, 1:n-1]
-        C = K[n, n]
+        # Update covariance matrix and it's cholesky factorization
+        KxX = eval_KxX(fs.ψ, xnew, fs.X[:, 1:update_ndx-1])
+        fs.K[update_ndx, 1:update_ndx-1] = KxX
+        fs.K[1:update_ndx-1, update_ndx] = KxX'
+        fs.K[update_ndx, update_ndx] = first(eval_KXX(fs.ψ, reshape(xnew, length(xnew), 1), σn2=fs.σn2))
+
+        L21, L22 = update_cholesky(
+            fs.K[1:update_ndx, 1:update_ndx],
+            fs.L[1:update_ndx-1, 1:update_ndx-1]
+        )
+        fs.L[update_ndx, 1:update_ndx-1] = L21
+        fs.L[update_ndx, update_ndx] = L22
         
-        # Compute the updated factorizations using schur complements
-        L21 = B / L'
-        L22 = sqrt(C - first(L21*L21'))
-    
-        return L21, L22
+        L = fs.L[1:update_ndx, 1:update_ndx]
+        c = L'\(L\fs.y)
+        push!(fs.cs, c)
+        fs.fantasies_observed += 1
     end
-
-    L21, L22 = update_cholesky(
-        fs.K[1:update_ndx, 1:update_ndx],
-        fs.L[1:update_ndx-1, 1:update_ndx-1]
-    )
-    fs.L[update_ndx, 1:update_ndx-1] = L21
-    fs.L[update_ndx, update_ndx] = L22
-    
-    L = @view fs.L[1:update_ndx, 1:update_ndx]
-    c = L'\(L\fs.y)
-    push!(fs.cs, c)
-    fs.fantasies_observed += 1    
 
     return nothing
 end

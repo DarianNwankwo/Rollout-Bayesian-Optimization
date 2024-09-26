@@ -184,12 +184,14 @@ end
 
 function eval_DKxX(rbf::RadialBasisFunction, x::AbstractVector{T}, X::AbstractMatrix{T}) where T <: Real
     M, N = size(X)
-    KxX = eval_Dk(rbf, x - X[:,1])
-    for j = 2:N
-        KxX = hcat(
-            KxX,
-            eval_Dk(rbf, x - X[:,j])
-        )
+    @views begin
+        KxX = eval_Dk(rbf, x - X[:,1])
+        for j = 2:N
+            KxX = hcat(
+                KxX,
+                eval_Dk(rbf, x - X[:,j])
+            )
+        end
     end
 
     return KxX
@@ -223,19 +225,21 @@ function eval_DKXX(
     s(i) = (i-1)*(D+1)+1
     e(i) = s(i)+D
 
-    for i = 1:N
-        # Starting indices
-        si, ei = s(i), e(i)
-        K[si:ei, si:ei] = ψ0
-        # Reduce computations by leveraging symmetric structure of
-        # covariance matrix
-        for j = i+1:N
-            # Row remains stationary as columns (j=i+1) vary as a function
-            # of the row index (i)
-            sj, ej = s(j), e(j)
-            Kij = eval_Dk(rbf, X[:,i]-X[:,j])
-            K[si:ei, sj:ej] = Kij
-            K[sj:ej, si:ei] = Kij'
+    @views begin
+        for i = 1:N
+            # Starting indices
+            si, ei = s(i), e(i)
+            K[si:ei, si:ei] = ψ0
+            # Reduce computations by leveraging symmetric structure of
+            # covariance matrix
+            for j = i+1:N
+                # Row remains stationary as columns (j=i+1) vary as a function
+                # of the row index (i)
+                sj, ej = s(j), e(j)
+                Kij = eval_Dk(rbf, X[:,i]-X[:,j])
+                K[si:ei, sj:ej] = Kij
+                K[sj:ej, si:ei] = Kij'
+            end
         end
     end
 
@@ -253,12 +257,14 @@ function eval_KXX(rbf::RadialBasisFunction, X::AbstractMatrix{T}; σn2::T = 1e-6
     KXX = zeros(N, N)
     ψ0 = rbf(0.0)
 
-    for j = 1:N
-        KXX[j,j] = ψ0
-        for i = j+1:N
-            Kij = rbf(norm(X[:,i]-X[:,j]))
-            KXX[i,j] = Kij
-            KXX[j,i] = Kij
+    @views begin
+        for j = 1:N
+            KXX[j,j] = ψ0
+            for i = j+1:N
+                Kij = rbf(norm(X[:,i]-X[:,j]))
+                KXX[i,j] = Kij
+                KXX[j,i] = Kij
+            end
         end
     end
 
@@ -274,10 +280,12 @@ function eval_KXY(rbf::RadialBasisFunction, X::AbstractMatrix{T}, Y::AbstractMat
     d, M = size(X)
     d, N = size(Y)
     KXY = zeros(M, N)
-
-    for j = 1:N
-        for i = 1:M
-            KXY[i,j] = rbf(norm(X[:,i]-Y[:,j]))
+    
+    @views begin
+        for j = 1:N
+            for i = 1:M
+                KXY[i,j] = rbf(norm(X[:,i]-Y[:,j]))
+            end
         end
     end
 
@@ -294,8 +302,10 @@ function eval_KxX(rbf::RadialBasisFunction, x::AbstractVector{T}, X::AbstractMat
     d, N = size(X)
     KxX = zeros(N)
     
-    for i = 1:N
-        KxX[i] = rbf(norm(x-X[:,i]))
+    @views begin
+        for i = 1:N
+            KxX[i] = rbf(norm(x-X[:,i]))
+        end
     end
 
     return KxX
@@ -417,11 +427,13 @@ function eval_∇KxX(rbf::RadialBasisFunction, x::AbstractVector{T}, X::Abstract
     d, N = size(X)
     ∇KxX = zeros(d, N)
     
-    for j = 1:N
-        r = x-X[:,j]
-        ρ = norm(r)
-        if ρ > 0
-            ∇KxX[:,j] = rbf.Dρ_ψ(ρ)*r/ρ
+    @views begin
+        for j = 1:N
+            r = x-X[:,j]
+            ρ = norm(r)
+            if ρ > 0
+                ∇KxX[:,j] = rbf.Dρ_ψ(ρ)*r/ρ
+            end
         end
     end
 
@@ -499,11 +511,13 @@ function eval_δKXX(
     d, N = size(X)
     δKXX = zeros(N, N)
 
-    for j = 1:N
-        for i = j+1:N
-            δKij = eval_∇k(rbf, X[:,i]-X[:,j])' * (δX[:,i]-δX[:,j])
-            δKXX[i,j] = δKij
-            δKXX[j,i] = δKij
+    @views begin
+        for j = 1:N
+            for i = j+1:N
+                δKij = eval_∇k(rbf, X[:,i]-X[:,j])' * (δX[:,i]-δX[:,j])
+                δKXX[i,j] = δKij
+                δKXX[j,i] = δKij
+            end
         end
     end
 
@@ -526,9 +540,11 @@ function eval_δKXY(
     d, M = size(Y)
     δKXY = zeros(N, M)
 
-    for i = 1:N
-        for j = 1:M
-            δKXY[i,j] = eval_∇k(rbf, X[:,i]-Y[:,j])' * (δX[:,i]-δY[:,j])
+    @views begin
+        for i = 1:N
+            for j = 1:M
+                δKXY[i,j] = eval_∇k(rbf, X[:,i]-Y[:,j])' * (δX[:,i]-δY[:,j])
+            end
         end
     end
 
@@ -550,9 +566,10 @@ function eval_δKxX(
     d, N = size(X)
     δKxX = zeros(N)
 
-    for j = 1:N
-        # δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (δX[:,j])
-        δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (-δX[:,j])
+    @views begin
+        for j = 1:N
+            δKxX[j] = eval_∇k(rbf, x-X[:,j])' * (-δX[:,j])
+        end
     end
 
     return δKxX
@@ -573,8 +590,10 @@ function eval_δ∇KxX(
     d, N = size(X)
     δ∇KxX = zeros(d, N)
 
-    for j = 1:N
-        δ∇KxX[:,j] = eval_Hk(rbf, x-X[:,j]) * (-δX[:,j])
+    @views begin
+        for j = 1:N
+            δ∇KxX[:,j] = eval_Hk(rbf, x-X[:,j]) * (-δX[:,j])
+        end
     end
 
     return δ∇KxX
@@ -594,9 +613,11 @@ function eval_DKxX(
     D::Int) where T <: Real
     M, N = size(X)
     
-    KxX = eval_Dk(rbf, x-X[:,1])
-    for j = 2:N
-        KxX = hcat(KxX, eval_Dk(rbf, x-X[:,j]))
+    @views begin
+        KxX = eval_Dk(rbf, x-X[:,1])
+        for j = 2:N
+            KxX = hcat(KxX, eval_Dk(rbf, x-X[:,j]))
+        end
     end
 
     return KxX
@@ -610,12 +631,14 @@ function eval_Dθ_KXX(
     δKXX = zeros(N, N)
     δψ0 = rbf.∇θ_ψ(0.0)' * δθ
 
-    for j = 1:N
-        δKXX[j,j] = δψ0
-        for i = j+1:N
-            δKij = rbf.∇θ_ψ(norm(X[:,i]-X[:,j]))' * δθ
-            δKXX[i,j] = δKij
-            δKXX[j,i] = δKij
+    @views begin
+        for j = 1:N
+            δKXX[j,j] = δψ0
+            for i = j+1:N
+                δKij = rbf.∇θ_ψ(norm(X[:,i]-X[:,j]))' * δθ
+                δKXX[i,j] = δKij
+                δKXX[j,i] = δKij
+            end
         end
     end
 
