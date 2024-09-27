@@ -232,7 +232,8 @@ end
 function get_fantasy_observations(fs::AbstractFantasySurrogate)
     y = get_observations(fs)
     N = get_known_observations(fs)
-    return y[N+1:end]
+    M = get_total_observations(fs)
+    return y[N+1:M]
 end
 
 
@@ -258,8 +259,12 @@ function sample(T::ForwardTrajectoryWithMOGP)
 end
 
 function sample(T::Union{AdjointTrajectory, ForwardTrajectory})
-    @assert T.fs.fantasies_observed == get_horizon(T) + 1 "Cannot sample from a trajectory that has not been rolled out"
-    fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
+    fs = get_fantasy_surrogate(T)
+    m = get_fantasies_observed(fs)
+    n = get_known_observations(fs)
+    @assert m == get_horizon(T) + 1 "Cannot sample from a trajectory that has not been rolled out"
+    
+    fantasy_slice = n + 1 : n + m
     return [
         (
             x=T.fs.X[:, i],
@@ -277,7 +282,6 @@ end
 
 
 function resolve(T::AbstractTrajectory)
-    path = sample(T)
     fmini = minimum(get_observations(get_base_surrogate(T)))
     best_ndx, best_step = best(T)
     fb = best_step.y
@@ -601,39 +605,6 @@ function simulate_forward_trajectory(
 end
 
 # function simulate_adjoint_trajectory
-function simulate_adjoint_trajectory(
-    s::Surrogate,
-    tp::TrajectoryParameters;
-    inner_solve_xstarts::AbstractMatrix,
-    func::Function,
-    grad::Function)
-    deepcopy_s = Base.deepcopy(s)
-    slbs, subs = get_spatial_bounds(tp)
-
-    # Rollout trajectory
-    T = AdjointTrajectory(
-        base_surrogate=deepcopy_s,
-        start=get_starting_point(tp),
-        horizon=get_horizon(tp),
-        hypers=get_hyperparameters(tp)
-    )
-    sampler = DeterministicObservable(func=func, gradient=grad, max_invocations=get_horizon(tp) + 1)
-    attach_observable!(T, sampler)
-    rollout!(T,
-        lowerbounds=slbs,
-        upperbounds=subs,
-        get_observation=get_observable(T),
-        xstarts=inner_solve_xstarts,
-    )
-
-    μxθ = resolve(T)
-    g_ = gradient(T)
-    zsx = zeros(length(get_starting_point(tp)))
-    zsθ = zeros(length(get_hyperparameters(tp)))
-
-    return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=0., ∇μx=g_.∇x, σ_∇μx=zsx, ∇μθ=g_.∇θ, σ_∇μθ=zsθ)
-end
-
 
 function simulate_adjoint_trajectory(
     s::Surrogate,

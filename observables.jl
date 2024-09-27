@@ -97,4 +97,4 @@ function (deo::DeterministicObservable)(x::Vector{T})::Number where T <: Real
     return observation
 end
 
-get_gradient(o::AbstractObservable; at::Int) = o.gradients[:, at]
+get_gradient(o::AbstractObservable; at::Int) = @view o.gradients[:, at]

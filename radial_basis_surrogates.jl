@@ -16,8 +16,9 @@ abstract type AbstractSurrogate end
 abstract type AbstractFantasySurrogate <: AbstractSurrogate end
 abstract type AbstractPerturbationSurrogate <: AbstractSurrogate end
 
-get_known_observations(afs::AbstractFantasySurrogate) = afs.known_observed
-get_total_observations(afs::AbstractFantasySurrogate) = afs.known_observed + afs.fantasies_observed
+get_known_observations(afs::AbstractFantasySurrogate) = afs.observed
+get_total_observations(afs::AbstractFantasySurrogate) = afs.observed + afs.fantasies_observed
+get_fantasies_observed(afs::AbstractFantasySurrogate) = afs.fantasies_observed
 get_kernel(afs::AbstractSurrogate) = afs.ψ
 get_covariates(afs::AbstractSurrogate) = afs.X
 get_observations(afs::AbstractSurrogate) = afs.y
@@ -40,10 +41,10 @@ mutable struct Surrogate{RBF <: StationaryKernel, P <: AbstractDecisionRule} <: 
     capacity::Int
 end
 
-get_capacity(s::Surrogate) = s.capacity
-increment!(s::Surrogate) = s.observed += 1
-get_observed(s::Surrogate) = s.observed
-is_full(s::Surrogate) = get_observed(s) == get_capacity(s)
+get_capacity(s::AbstractSurrogate) = s.capacity
+increment!(s::AbstractSurrogate) = s.observed += 1
+get_observed(s::AbstractSurrogate) = s.observed
+is_full(s::AbstractSurrogate) = get_observed(s) == get_capacity(s)
 get_active_covariates(s) = @view get_covariates(s)[:, 1:get_observed(s)]
 get_active_cholesky(s) = @view get_cholesky(s)[1:get_observed(s), 1:get_observed(s)]
 get_active_covariance(s) = @view get_covariance(s)[1:get_observed(s), 1:get_observed(s)]
@@ -119,15 +120,17 @@ function insert!(s::Surrogate, x::Vector{T}, y::T) where T <: Real
 end
 
 function update_covariance!(s::Surrogate, x::Vector{T}, y::T) where T <: Real
-    update_index = get_observed(s)
-    active_X = get_covariates(s)[:, 1:update_index - 1]
-    kernel = get_kernel(s)
+    @views begin
+        update_index = get_observed(s)
+        active_X = get_covariates(s)[:, 1:update_index - 1]
+        kernel = get_kernel(s)
 
-    # Update the main diagonal
-    s.K[update_index, update_index] = kernel(0.) + s.σn2
-    # Update the rows and columns with covariance vector formed from k(x, X)
-    s.K[update_index, 1:update_index - 1] = eval_KxX(kernel, x, active_X)'
-    s.K[1:update_index - 1, update_index] = s.K[update_index, 1:update_index - 1] 
+        # Update the main diagonal
+        s.K[update_index, update_index] = kernel(0.) + s.σn2
+        # Update the rows and columns with covariance vector formed from k(x, X)
+        s.K[update_index, 1:update_index - 1] = eval_KxX(kernel, x, active_X)'
+        s.K[1:update_index - 1, update_index] = s.K[update_index, 1:update_index - 1] 
+    end
 end
 
 function update_cholesky!(s::Surrogate)
@@ -135,7 +138,7 @@ function update_cholesky!(s::Surrogate)
     @views begin
         n = get_observed(s)
         B = s.K[n:n, 1:n-1]
-        C = s.K[n, n]
+        C = s.K[n:n, n:n]
         L = s.L[1:n-1, 1:n-1]
         
         # Compute the updated factorizations using schur complements
@@ -150,7 +153,7 @@ function update_cholesky!(s::Surrogate)
     end
 end
 
-function update_coefficients!(s)
+function update_coefficients!(s::Surrogate)
     update_index = get_observed(s)
     @views begin
         L = s.L[1:update_index, 1:update_index]
@@ -172,162 +175,86 @@ function eval(
     s::Surrogate,
     x::Vector{T},
     θ::Vector{T}) where T<: Real
-    sx = LazyStruct()
-    set(sx, :s, s)
-    set(sx, :x, x)
-    set(sx, :θ, θ)
+    @views begin
+        sx = LazyStruct()
+        set(sx, :s, s)
+        set(sx, :x, x)
+        set(sx, :θ, θ)
 
-    active_index = get_observed(s)
-    X = @view get_covariates(s)[:, 1:active_index]
-    L = @view get_cholesky(s)[1:active_index, 1:active_index]
-    c = @view get_coefficients(s)[1:active_index]
-    y = @view get_observations(s)[1:active_index]
-    kernel = get_kernel(s)
+        active_index = get_observed(s)
+        X = get_covariates(s)[:, 1:active_index]
+        L = get_cholesky(s)[1:active_index, 1:active_index]
+        c = get_coefficients(s)[1:active_index]
+        y = get_observations(s)[1:active_index]
+        kernel = get_kernel(s)
 
-    d, N = size(X)
+        d, N = size(X)
 
-    sx.kx = () -> eval_KxX(s.ψ, x, X)
-    sx.∇kx = () -> eval_∇KxX(s.ψ, x, X)
+        sx.kx = () -> eval_KxX(s.ψ, x, X)
+        sx.∇kx = () -> eval_∇KxX(s.ψ, x, X)
 
-    sx.μ = () -> dot(sx.kx, c)
-    sx.∇μ = () -> sx.∇kx * c
-    sx.dμ = () -> vcat(sx.μ, sx.∇μ)
-    sx.Hμ = function()
-        @views begin
+        sx.μ = () -> dot(sx.kx, c)
+        sx.∇μ = () -> sx.∇kx * c
+        sx.dμ = () -> vcat(sx.μ, sx.∇μ)
+        sx.Hμ = function()
             H = zeros(d, d)
             for j = 1:N
                 H += c[j] * eval_Hk(s.ψ, x-X[:,j])
             end
+            return H
         end
-        return H
-    end
 
-    sx.w = () -> L'\(L\sx.kx)
-    sx.Dw = () -> L'\(L\(sx.∇kx'))
-    sx.∇w = () -> sx.Dw'
-    sx.σ = () -> sqrt(get_kernel(s)(0) - dot(sx.kx', sx.w))
-    sx.dσ = function()
-        kxx = eval_Dk(kernel, zeros(d))
-        kxX = [eval_KxX(kernel, x, X)'; eval_∇KxX(kernel, x, X)]
-        σx = Symmetric(kxx - kxX * (L' \ (L \ kxX')))
-        σx = cholesky(σx).L
-        return σx
-    end
-    sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
-    sx.Hσ = function()
-        H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
-        w = sx.w
-        @views begin
+        sx.w = () -> L'\(L\sx.kx)
+        sx.Dw = () -> L'\(L\(sx.∇kx'))
+        sx.∇w = () -> sx.Dw'
+        sx.σ = () -> sqrt(get_kernel(s)(0) - dot(sx.kx', sx.w))
+        sx.dσ = function()
+            kxx = eval_Dk(kernel, zeros(d))
+            kxX = [eval_KxX(kernel, x, X)'; eval_∇KxX(kernel, x, X)]
+            σx = Symmetric(kxx - kxX * (L' \ (L \ kxX')))
+            σx = cholesky(σx).L
+            return σx
+        end
+        sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
+        sx.Hσ = function()
+            H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
+            w = sx.w
             for j = 1:N
                 H -= w[j] * eval_Hk(s.ψ, x-X[:,j])
             end
+            H /= sx.σ
+            return H
         end
-        H /= sx.σ
-        return H
+
+        sx.y = () -> y
+        sx.g = () -> get_decision_rule(s)
+
+        sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.d2g_dμdθ = () -> mixed_partial(sx.s.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dσdθ = () -> mixed_partial(sx.s.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx)
+        sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
+        sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
+        
+        sx.∇αθ = () -> sx.dg_dθ
+        sx.Hαθ = () -> sx.d2g_dθ
+
+        sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
+        sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
+        sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
     end
-
-    sx.y = () -> y
-    sx.g = () -> get_decision_rule(s)
-
-    sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.d2g_dμdθ = () -> mixed_partial(sx.s.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dσdθ = () -> mixed_partial(sx.s.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx)
-    sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
-    sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
-    
-    sx.∇αθ = () -> sx.dg_dθ
-    sx.Hαθ = () -> sx.d2g_dθ
-
-    sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
-    sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
-    sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
 
     return sx
 end
 
-# function eval(
-#     s::Surrogate,
-#     x::Vector{T},
-#     θ::Vector{T}) where T<: Real
-#     sx = LazyStruct()
-#     set(sx, :s, s)
-#     set(sx, :x, x)
-#     set(sx, :θ, θ)
-
-#     d, N = size(s.X)
-
-#     sx.kx = () -> eval_KxX(s.ψ, x, s.X)
-#     sx.∇kx = () -> eval_∇KxX(s.ψ, x, s.X)
-
-#     sx.μ = () -> dot(sx.kx, s.c)
-#     sx.∇μ = () -> sx.∇kx * s.c
-#     sx.dμ = () -> vcat(sx.μ, sx.∇μ)
-#     sx.Hμ = function()
-#         H = zeros(d, d)
-#         for j = 1:N
-#             H += s.c[j] * eval_Hk(s.ψ, x-s.X[:,j])
-#         end
-#         return H
-#     end
-
-#     sx.w = () -> s.L'\(s.L\sx.kx)
-#     sx.Dw = () -> s.L'\(s.L\(sx.∇kx'))
-#     sx.∇w = () -> sx.Dw'
-#     sx.σ = () -> sqrt(s.ψ(0) - dot(sx.kx', sx.w))
-#     sx.dσ = function()
-#         kxx = eval_Dk(sx.s.ψ, zeros(d))
-#         kxX = [eval_KxX(sx.s.ψ, x, sx.s.X)'; eval_∇KxX(sx.s.ψ, x, sx.s.X)]
-#         σx = Symmetric(kxx - kxX * (sx.s.L' \ (sx.s.L \ kxX')))
-#         σx = cholesky(σx).L
-#         return σx
-#     end
-#     sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
-#     sx.Hσ = function()
-#         H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
-#         w = sx.w
-#         for j = 1:N
-#             H -= w[j] * eval_Hk(s.ψ, x-s.X[:,j])
-#         end
-#         H /= sx.σ
-#         return H
-#     end
-
-#     sx.y = () -> sx.s.y
-#     sx.g = () -> sx.s.g
-
-#     sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-#     sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-#     sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-#     sx.d2g_dμ = () -> second_partial(sx.s.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-#     sx.d2g_dσ = () -> second_partial(sx.s.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-#     sx.d2g_dθ = () -> second_partial(sx.s.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-#     sx.d2g_dμdθ = () -> mixed_partial(sx.s.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
-#     sx.d2g_dσdθ = () -> mixed_partial(sx.s.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
-
-#     sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx)
-#     sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
-#     sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
-    
-#     sx.∇αθ = () -> sx.dg_dθ
-#     sx.Hαθ = () -> sx.d2g_dθ
-
-#     sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
-#     sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
-#     sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
-
-#     return sx
-# end
 
 (s::Surrogate)(x::T, θ::T) where T <: AbstractVector = eval(s, x, θ)
 eval(sx) = sx.αxθ
@@ -335,10 +262,7 @@ gradient(sx; wrt_hypers=false) = wrt_hypers ? sx.∇αθ : sx.∇αx
 hessian(sx; wrt_hypers=false) = wrt_hypers ? sx.Hαθ : sx.Hαx
 mixed_partials(sx) = sx.Hαxθ
 
-mutable struct FantasySurrogate{
-    RBF <: StationaryKernel,
-    P <: AbstractDecisionRule
-    } <: AbstractFantasySurrogate
+mutable struct FantasySurrogate{RBF <: StationaryKernel, P <: AbstractDecisionRule} <: AbstractFantasySurrogate
     ψ::RBF
     X::Matrix{Float64}
     K::Matrix{Float64}
@@ -348,9 +272,13 @@ mutable struct FantasySurrogate{
     σn2::Float64
     g::P
     h::Int
-    known_observed::Int
+    observed::Int
     fantasies_observed::Int
+    capacity::Int
 end
+
+increment!(fs::FantasySurrogate) = fs.fantasies_observed += 1
+
 
 function Base.show(io::IO, s::FantasySurrogate{RBF, P}) where {RBF, P}
     print(io, "FantasySurrogate{RBF = ")
@@ -362,29 +290,40 @@ end
 
 
 function FantasySurrogate(s::Surrogate, horizon::Int)
-    
-    N = get_observed(s)
-    d = size(s.X, 1)
-    K = zeros(N+horizon+1, N+horizon+1)
-    
-    K[1:N, 1:N] = @view get_covariance(s)[1:N, 1:N]
-    L = LowerTriangular(zeros(N+horizon+1, N+horizon+1))
-    L[1:N, 1:N] = @view get_cholesky(s)[1:N, 1:N]
-    X = zeros(d, N+horizon+1)
-    X[:, 1:N] = @view get_covariates(s)[:, 1:N]
+    @views begin
+        N = get_observed(s)
+        capacity = get_capacity(s)
+        d = size(s.X, 1)
+        # Preallocate covariance matrix for full BO loop and fantasized trajectories
+        preallocated_K = zeros(capacity + horizon + 1, capacity + horizon + 1)
+        preallocated_K[1:N, 1:N] = get_covariance(s)[1:N, 1:N]
+
+        # Preallocate cholesky matrix for full BO loop and fantasized trajectories
+        preallocated_L = LowerTriangular(zeros(capacity + horizon + 1, capacity + horizon + 1))
+        preallocated_L[1:N, 1:N] = get_cholesky(s)[1:N, 1:N]
+
+        # Preallocate covariate matrix
+        preallocated_X = zeros(d, capacity + horizon + 1)
+        preallocated_X[:, 1:N] = get_covariates(s)[:, 1:N]
+
+        # Preallocated observation vector
+        preallocated_y = zeros(capacity + horizon + 1)
+        preallocated_y[1:N] = get_observations(s)[1:N]
+    end
 
     return FantasySurrogate(
         get_kernel(s),
-        X,
-        K,
-        L,
-        deepcopy(get_observations(s)[1:N]),
-        [deepcopy(get_coefficients(s)[1:N])],
+        preallocated_X,
+        preallocated_K,
+        preallocated_L,
+        preallocated_y,
+        [get_coefficients(s)[1:N]],
         s.σn2,
         get_decision_rule(s),
         horizon,
         N,
-        0
+        0,
+        get_capacity(s)
     )
 end
 
@@ -401,44 +340,103 @@ function update_cholesky(K::AbstractMatrix{T}, L::AbstractMatrix{T}) where T <: 
     return L21, L22
 end
 
-function condition!(fs::FantasySurrogate, xnew::Vector{T}, ynew::T) where T <: Real
-    @assert fs.fantasies_observed < fs.h + 1
-    @views begin
-        update_ndx = fs.known_observed + fs.fantasies_observed + 1
-        # We can use the same logic here for preallocating space for X
-        fs.X[:, update_ndx] = xnew
-        fs.y = vcat(fs.y, ynew)
-
-        # Update covariance matrix and it's cholesky factorization
-        KxX = eval_KxX(fs.ψ, xnew, fs.X[:, 1:update_ndx-1])
-        fs.K[update_ndx, 1:update_ndx-1] = KxX
-        fs.K[1:update_ndx-1, update_ndx] = KxX'
-        fs.K[update_ndx, update_ndx] = first(eval_KXX(fs.ψ, reshape(xnew, length(xnew), 1), σn2=fs.σn2))
-
-        L21, L22 = update_cholesky(
-            fs.K[1:update_ndx, 1:update_ndx],
-            fs.L[1:update_ndx-1, 1:update_ndx-1]
-        )
-        fs.L[update_ndx, 1:update_ndx-1] = L21
-        fs.L[update_ndx, update_ndx] = L22
-        
-        L = fs.L[1:update_ndx, 1:update_ndx]
-        c = L'\(L\fs.y)
-        push!(fs.cs, c)
-        fs.fantasies_observed += 1
-    end
-
-    return nothing
+function insert!(fs::FantasySurrogate, x::Vector{T}, y::T) where T <: Real
+    insert_index = get_total_observations(fs) + 1
+    fs.X[:, insert_index] = x
+    fs.y[insert_index] = y
 end
+
+function update_covariance!(fs::FantasySurrogate, x::Vector{T}, y::T) where T <: Real
+    @views begin
+        update_index = get_total_observations(fs)
+        active_X = get_covariates(fs)[:, 1:update_index - 1]
+        kernel = get_kernel(fs)
+
+        # Update the main diagonal enry
+        fs.K[update_index, update_index] = kernel(0.) + fs.σn2
+        # Update the rows and columns with covariance vector formed from k(x, X)
+        fs.K[update_index, 1:update_index - 1] = eval_KxX(kernel, x, active_X)'
+        fs.K[1:update_index - 1, update_index] = fs.K[update_index, 1:update_index - 1]
+    end
+end
+
+function update_cholesky!(fs::FantasySurrogate)
+    @views begin
+        n = get_total_observations(fs)
+        B = fs.K[n:n, 1:n-1]
+        C = fs.K[n:n, n:n]
+        L = fs.L[1:n-1, 1:n-1]
+
+        # Compute the updated factorizations using Schur complements
+        L21 = B / L'
+        L22 = cholesky(C - L21*L21').L
+
+        # Update the full factorization
+        for j in 1:n-1
+            fs.L[n, j] = L21[1, j]
+        end
+        fs.L[n, n] = L22[1, 1]
+    end
+end
+
+function update_coefficients!(fs::FantasySurrogate)
+    @views begin
+        update_index = get_total_observations(fs)
+        L = fs.L[1:update_index, 1:update_index]
+        y = fs.y[1:update_index]
+        push!(fs.cs, L' \ (L \ y))
+    end
+end
+
+function condition!(fs::FantasySurrogate, xnew::Vector{T}, ynew::T) where T <: Real
+    # The preallocated surrogate is always allocated based on a base surrogate and has similar
+    # memory allocations + enough for the fantasized trajectories, hence, we won't need a method
+    # for resizing fantasy trajectories.
+    insert!(fs, xnew, ynew)
+    increment!(fs)
+    update_covariance!(fs, xnew, ynew)
+    update_cholesky!(fs)
+    update_coefficients!(fs)
+    return fs
+end
+
+"""
+We preallocate enough space for arbitrarily long fantasized surrogates, but once we make an observation
+and incorporate that new observation into our base surrogate, we need to update a few things on the
+fantasized surrogate. Namely,
+    - The number of observed true values
+    - The covariate matrix
+    - The cholesky factorization
+    - The observation vector
+    - The coefficient  vector
+"""
+function update!(fs::FantasySurrogate, s::Surrogate)
+    @views begin
+        # Reset fantasy observed to 0
+        fs.fantasies_observed = 0
+        N = get_observed(s)
+        fs.observed = N
+        # Update single column with new covariate
+        fs.X[:, N] = get_covariates(s)[:, N]
+        # Update row, column and main diagonal with new covariance measures
+        KxX_update = get_covariance(s)[N, 1:N]
+        fs.K[N, 1:N - 1] = KxX_update[1:N - 1]
+        fs.K[1:N - 1, N] = fs.K[N, 1:N - 1]
+        fs.K[N, N] = KxX_update[N]
+        # Update row, column and main diagonal with new cholesky factorization
+        LxX_update = get_cholesky(s)[N, 1:N]
+        fs.L[N, 1:N - 1] = LxX_update[1:N - 1]
+        fs.L[N, N] = LxX_update[N]
+        # Update the coefficient vector
+        fs.cs[1] = get_coefficients(s)[1:N]
+        
+    end
+end
+
 
 function reset!(fs::FantasySurrogate)
     N = get_known_observations(fs)
-    # Reset fantasy observations
     fs.fantasies_observed = 0
-    # TODO: Preallocate the entire y and c and reuse
-    # Reset observation vector
-    fs.y = fs.y[1:N]
-    # Reset coefficient vector container
     fs.cs = [fs.cs[1]]
 end
 
@@ -448,84 +446,86 @@ function eval(
     θ::Vector{T};
     fantasy_index::Int) where T <: Real
     @assert fantasy_index <= fs.h "Can only observed fantasized locations. Maximum fantasy index is $(fs.h)"
-    sx = LazyStruct()
-    set(sx, :fs, fs)
-    set(sx, :x, x)
-    set(sx, :θ, θ)
-    set(sx, :fantasy_index, fantasy_index)
+    @views begin
+        sx = LazyStruct()
+        set(sx, :fs, fs)
+        set(sx, :x, x)
+        set(sx, :θ, θ)
+        set(sx, :fantasy_index, fantasy_index)
 
-    d, N = size(fs.X)
-    ZERO_BASED_OFFSET = 1
-    FANTASY_BASED_OFFSET = 1
-    TOTAL_OFFSET = ZERO_BASED_OFFSET + FANTASY_BASED_OFFSET
-    slice = 1:fs.known_observed + fantasy_index + FANTASY_BASED_OFFSET
+        d, N = size(fs.X)
+        ZERO_BASED_OFFSET = 1
+        FANTASY_BASED_OFFSET = 1
+        TOTAL_OFFSET = ZERO_BASED_OFFSET + FANTASY_BASED_OFFSET
+        slice = 1:fs.observed + fantasy_index + FANTASY_BASED_OFFSET
 
-    sx.kx = () -> eval_KxX(fs.ψ, x, (@view fs.X[:, slice]))
-    sx.∇kx = () -> eval_∇KxX(fs.ψ, x, (@view fs.X[:, slice]))
+        sx.kx = () -> eval_KxX(fs.ψ, x, fs.X[:, slice])
+        sx.∇kx = () -> eval_∇KxX(fs.ψ, x, fs.X[:, slice])
 
-    sx.μ = () -> dot(sx.kx, fs.cs[fantasy_index + TOTAL_OFFSET])
-    sx.∇μ = () -> sx.∇kx * fs.cs[fantasy_index + TOTAL_OFFSET]
-    sx.dμ = () -> vcat(sx.μ, sx.∇μ)
-    sx.Hμ = function()
-        H = zeros(d, d)
-        # for j = 1:N
-        for j = slice
-            H += fs.cs[fantasy_index + TOTAL_OFFSET][j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+        sx.μ = () -> dot(sx.kx, fs.cs[fantasy_index + TOTAL_OFFSET])
+        sx.∇μ = () -> sx.∇kx * fs.cs[fantasy_index + TOTAL_OFFSET]
+        sx.dμ = () -> vcat(sx.μ, sx.∇μ)
+        sx.Hμ = function()
+            H = zeros(d, d)
+            # for j = 1:N
+            for j = slice
+                H += fs.cs[fantasy_index + TOTAL_OFFSET][j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+            end
+            return H
         end
-        return H
-    end
 
-    sx.w = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\sx.kx)
-    sx.Dw = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\(sx.∇kx'))
-    sx.∇w = () -> sx.Dw'
-    sx.σ = () -> sqrt(fs.ψ(0) - dot(sx.kx', sx.w))
-    sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
-    sx.dσ = function()
-        kxx = eval_Dk(fs.ψ, zeros(d))
-        kxX = [eval_KxX(fs.ψ, x, fs.X[:, slice])'; eval_∇KxX(fs.ψ, x, fs.X[:, slice])]
-        σx = Symmetric(kxx - kxX * (fs.L[slice, slice]' \ (fs.L[slice, slice] \ kxX')))
-        σx = cholesky(σx).L
-        return σx
-    end 
-    sx.Hσ = function()
-        H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
-        w = sx.w
-        # for j = 1:N
-        for j = slice
-            H -= w[j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+        sx.w = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\sx.kx)
+        sx.Dw = () -> fs.L[slice, slice]'\(fs.L[slice, slice]\(sx.∇kx'))
+        sx.∇w = () -> sx.Dw'
+        sx.σ = () -> sqrt(fs.ψ(0) - dot(sx.kx', sx.w))
+        sx.∇σ = () -> -(sx.∇kx * sx.w) / sx.σ
+        sx.dσ = function()
+            kxx = eval_Dk(fs.ψ, zeros(d))
+            kxX = [eval_KxX(fs.ψ, x, fs.X[:, slice])'; eval_∇KxX(fs.ψ, x, fs.X[:, slice])]
+            σx = Symmetric(kxx - kxX * (fs.L[slice, slice]' \ (fs.L[slice, slice] \ kxX')))
+            σx = cholesky(σx).L
+            return σx
+        end 
+        sx.Hσ = function()
+            H = -sx.∇σ * sx.∇σ' - sx.∇kx * sx.Dw
+            w = sx.w
+            # for j = 1:N
+            for j = slice
+                H -= w[j] * eval_Hk(fs.ψ, x-fs.X[:,j])
+            end
+            H /= sx.σ
+            return H
         end
-        H /= sx.σ
-        return H
+
+        sx.y = () -> sx.fs.y[slice]
+        sx.g = () -> sx.fs.g
+
+        sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.d2g_dμ = () -> second_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dσ = () -> second_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dθ = () -> second_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.d2g_dμdθ = () -> mixed_partial(sx.fs.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
+        sx.d2g_dσdθ = () -> mixed_partial(sx.fs.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
+
+        sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx)
+
+        # Spatial gradients
+        sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
+        sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
+        
+        # Hyperparameter gradients
+        sx.∇αθ = () -> sx.dg_dθ
+        sx.Hαθ = () -> sx.d2g_dθ
+
+        # Mixed partials
+        sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
+        sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
+        sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
     end
-
-    sx.y = () -> sx.fs.y[slice]
-    sx.g = () -> sx.fs.g
-
-    sx.dg_dμ = () -> first_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.dg_dσ = () -> first_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.dg_dθ = () -> first_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.d2g_dμ = () -> second_partial(sx.g, symbol=:μ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dσ = () -> second_partial(sx.g, symbol=:σ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dθ = () -> second_partial(sx.g, symbol=:θ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.d2g_dμdθ = () -> mixed_partial(sx.fs.g, symbol=:μθ)(sx.μ, sx.σ, sx.θ, sx)
-    sx.d2g_dσdθ = () -> mixed_partial(sx.fs.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
-
-    sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx)
-
-    # Spatial gradients
-    sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
-    sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
-    
-    # Hyperparameter gradients
-    sx.∇αθ = () -> sx.dg_dθ
-    sx.Hαθ = () -> sx.d2g_dθ
-
-    # Mixed partials
-    sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
-    sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
-    sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
 
     return sx
 end
@@ -1000,16 +1000,20 @@ eval(fs::FantasyRBFsurrogate, x::Vector{Float64}) = eval(fs, x, minimum(fs.y))
 
 
 function get_known_and_fantasy_counts(fs::AbstractFantasySurrogate)
-    return (fs.known_observed, fs.fantasies_observed)
+    return (get_known_observations(fs), get_fantasies_observed(fs))
 end
 
 function get_active_locations(fs::AbstractFantasySurrogate, fantasy_index::Int)
-    return fs.X[:, 1:fs.known_observed + fantasy_index + 1]
+    @views begin
+        return fs.X[:, 1:get_known_observations(fs) + fantasy_index + 1]
+    end
 end
 
 function get_active_cholesky_factor(fs::AbstractFantasySurrogate, fantasy_index::Int64)
-    slice = 1:fs.known_observed + fantasy_index + 1
-    return fs.L[slice, slice]
+    @views begin
+        slice = 1:get_known_observations(fs) + fantasy_index + 1
+        return fs.L[slice, slice]
+    end
 end
 
 function construct_perturbation_matrix(fs::AbstractFantasySurrogate, fantasy_index)
@@ -1049,7 +1053,7 @@ function eval(δs::SpatialPerturbationSurrogate, sx; δx::Vector{T}, sample_inde
     X = get_active_locations(s, δs.max_fantasized_step)
     # Set's the desired location's perturbation while keeping every other location constant
     δs.X[:,:] .= 0.
-    δs.X[:, s.known_observed + sample_index + 1] .= δx
+    δs.X[:, s.observed + sample_index + 1] .= δx
     # Since we maintain the first set of learned coefficients, we need to offset by 1 to grab
     # the first fantasized pair
     FANTASY_BASED_OFFSET = 1
@@ -1095,7 +1099,7 @@ function DataPerturbationSurrogate(; reference_surrogate::FantasySurrogate, fant
     return DataPerturbationSurrogate(reference_surrogate, δX, fantasy_step)
 end
 
-function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T}, sample_index::Int) where T <: Real
+function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::AbstractVector{T}, sample_index::Int) where T <: Real
     # @assert 0 <= current_step "Can only perturb fantasized locations"
     # @assert current_step <= δs.max_fantasized_step "Attempting to perturb an observation beyong our trajectory"
     δsx = LazyStruct()
@@ -1106,7 +1110,7 @@ function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T
     X = get_active_locations(s, δs.max_fantasized_step)
     # Set's the desired location's perturbation while keeping every other location constant
     δs.X[:,:] .= 0.
-    δs.X[:, s.known_observed + sample_index + 1] .= δx
+    δs.X[:, s.observed + sample_index + 1] .= δx
     # Since we maintain the first set of learned coefficients, we need to offset by 1 to grab
     # the first fantasized pair
     FANTASY_BASED_OFFSET = 1
@@ -1118,8 +1122,8 @@ function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T
     δsx.K = () -> eval_δKXX(s.ψ, get_active_locations(s, δs.max_fantasized_step), δs.X)
     δsx.L = () -> get_active_cholesky_factor(s, δs.max_fantasized_step)
     δsx.y = function()
-        ys = zeros(s.known_observed + δs.max_fantasized_step + 1)
-        ys[fs.known_observed + sample_index + 1] = ∇y' * δs.X[:, s.known_observed + sample_index + 1]
+        ys = zeros(s.observed + δs.max_fantasized_step + 1)
+        ys[fs.known_observed + sample_index + 1] = ∇y' * δs.X[:, s.observed + sample_index + 1]
         return ys
     end
     δsx.c = () -> -(δsx.L' \ (δsx.L \ (δsx.K*s.cs[δs.max_fantasized_step + TOTAL_OFFSET])))
@@ -1143,7 +1147,7 @@ function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T
     return δsx
 end
 
-function (δs::DataPerturbationSurrogate)(sx; variation::Vector{T}, ∇y::Vector{T}, sample_index::Int) where T <: Real
+function (δs::DataPerturbationSurrogate)(sx; variation::Vector{T}, ∇y::AbstractVector{T}, sample_index::Int) where T <: Real
     return eval(δs, sx, δx=variation, sample_index=sample_index, ∇y=∇y)
 end
 

@@ -37,7 +37,7 @@ function base_solve(
     end
     
     function fun_hess!(h, x)
-        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θ, fantasy_index=fantasy_index)
+        fantasy_surrogate_at_xθ = fantasy_surrogate(x, θfixed, fantasy_index=fantasy_index)
         h[:, :] .= -hessian(fantasy_surrogate_at_xθ)
     end
 
