@@ -29,7 +29,7 @@ function box_muller_transform(S)
         x = S[:,j]
         
         for i in 1:dim
-            if is_odd(i)
+            if isodd(i)
                 y[i] = sqrt(-2log10(x[i]))*cos(2π*x[i+1])
             else
                 y[i] = sqrt(-2log10(x[i-1]))*sin(2π*x[i])
@@ -89,28 +89,6 @@ function stdize(series; a=0, b=1)
     return [a + (s - smin) / (smax - smin) * (b - a) for s in series]
 end
 
-function pairwise_diff_issmall(prev, next; tol=1e-6)
-    # If minimizing, prev-next. If maximizing, next-prev
-    return abs(prev-next) < tol
-end
-
-function pairwise_forward_diff(series)
-    N = length(series)
-    result = []
-    
-    for i in 1:N-1
-        diff = series[i] - series[i+1]
-        push!(result, diff)
-    end
-    
-    result
-end
-
-function is_still_increasing(series)
-    a, b, c = series[end-2:end]
-    return a < b < c
-end
-
 function print_divider(char="-"; len=80)
     for _ in 1:len print(char) end
     println()
@@ -164,30 +142,6 @@ end
 centered_fd(f, u, du, h) = (f(u+h*du)-f(u-h*du)) / (2h)
 
 """
-This assumes stochastic gradient ascent
-
-x0: input to function g
-∇g: gradient of function g
-λ: learning rate
-β1, β2, ϵ
-m: first moment estimate
-v: second moment estimate
-"""
-function update_x_adam!(x0::Vector{Float64}; ∇g,  λ, β1, β2, ϵ, m, v, lbs, ubs)
-    # Print the dimension and name of each parameter in this function
-    mt = β1 * m[end] + (1 - β1) * ∇g  # Update first moment estimate
-    push!(m, vec(mt))
-    vt = β2 * v[end] + (1 - β2) * ∇g.^2  # Update second moment estimate
-    push!(v, vec(vt))
-    mt_hat = mt / (1 - β1)  # Correct for bias in first moment estimate
-    vt_hat = vt / (1 - β2)  # Correct for bias in second moment estimate
-    x = x0 + λ * mt_hat ./ (sqrt.(vt_hat) .+ ϵ)  # Compute updated position
-    x = max.(x, lbs)
-    x = min.(x, ubs)
-    return x  # Return updated position and updated moment estimates
-end
-
-"""
 Early Stopping without a Validation Set: `https://arxiv.org/abs/1703.09580`
 """
 function early_stopping_without_a_validation_set(;
@@ -202,29 +156,24 @@ end
 eswavs = early_stopping_without_a_validation_set
 
 
-function measure_gap(observations::Vector{T}, fbest::T) where T <: Number
-    ϵ = 1e-8
-    initial_minimum = observations[1]
-    subsequent_minimums = [
-        minimum(observations[1:j]) for j in 1:length(observations)
-    ]
-    numerator = initial_minimum .- subsequent_minimums
-    
-    if abs(fbest - initial_minimum) < ϵ
-        return 1. 
-    end
-    
-    denominator = initial_minimum - fbest
-    result = numerator ./ denominator
+function gap(initial_best::T, observed_best::T, actual_best::T) where T <: Real
+    return (initial_best - observed_best) / (initial_best - actual_best)
+end
 
-    for i in 1:length(result)
-        if result[i] < ϵ
-            result[i] = 0
+function update_gaps!(gaps::Vector{T}, observations::Vector{T}, actual_best::T; start_index::Int = 1) where T <: Real
+    @views begin
+        finish_index = length(observations)
+        initial_best = minimum(observations[1:start_index])
+
+        for (j, end_index) in enumerate(start_index:finish_index)
+            gaps[j] = gap(initial_best, minimum(observations[1:end_index]), actual_best)
         end
     end
-
-    return result
+    
+    return nothing
 end
+
+simple_regret(actual_minimum::T, observation::T) where T <: Real = observation - actual_minimum
 
 function generate_initial_guesses(N::Integer, lbs::Vector{T}, ubs::Vector{T},) where T <: Number
     ϵ = 1e-6
@@ -234,6 +183,25 @@ function generate_initial_guesses(N::Integer, lbs::Vector{T}, ubs::Vector{T},) w
     initial_guesses = hcat(initial_guesses, ubs .- ϵ)
 
     return initial_guesses
+end
+
+function create_csv(filename::String, budget::Int)
+    # Create the header based on the given budget
+    header = ["trial"; string.(1:budget)...]
+
+    # Create an empty DataFrame with the specified header
+    df = DataFrame(-ones(1, length(header)), Symbol.(header))
+
+    # Write the dataframe to a CSV file
+    CSV.write(filename * ".csv", df)
+end
+
+function write_to_csv(filename::String, data::Vector{T}) where T <: Real
+    CSV.write(
+        filename * ".csv",
+        Tables.table(data'),
+        append=true
+    )
 end
 
 struct ExperimentSetup
@@ -272,7 +240,7 @@ end
 
 get_starts(es::ExperimentSetup) = es.inner_solve_xstarts
 
-function to(n; key="KB")
+function to(n; key="MB")
     mapping = Dict("KB" => 1, "MB" => 2, "GB" => 3)
     factor = mapping[key]
     conversion = n / (1024 ^ mapping[key])

@@ -13,6 +13,7 @@ Abstract type defining a kernel used to denote similarity measures that depend
 only on the radial distance between points
 """
 abstract type StationaryKernel <: AbstractKernel end
+get_hyperparameters(sk::StationaryKernel) = sk.θ
 
 
 """
@@ -22,16 +23,8 @@ function with respect to the distance, the second derivative of the kernel
 function with respect to the distance, and the gradient of the kernel function
 with respect to the hyperparameter vector.
 """
-# struct RadialBasisFunction <: StationaryKernel
-#     θ::AbstractVector          # Hyperparameter vector
-#     ψ::Function                # Radial basis function
-#     Dρ_ψ::Function             # Derivative of the RBF wrt ρ
-#     Dρρ_ψ::Function            # Second derivative
-#     ∇θ_ψ::Function             # Gradient with respect to hypers
-#     constructor::Function
-# end
-struct RadialBasisFunction <: StationaryKernel
-    θ::Vector{Float64}
+struct RadialBasisFunction{T <: Real} <: StationaryKernel
+    θ::Vector{T}
     ψ
     Dρ_ψ
     Dρρ_ψ
@@ -39,15 +32,22 @@ struct RadialBasisFunction <: StationaryKernel
     constructor
 end
 
-function Base.show(io::IO, r::RadialBasisFunction)
-    print(io, "RadialBasisFunction")
+function Base.show(io::IO, r::RadialBasisFunction{T}) where T
+    print(io, "RadialBasisFunction{", T, "}")
 end
-
 
 (rbf::RadialBasisFunction)(ρ) = rbf.ψ(ρ)
 derivative(rbf::RadialBasisFunction) = rbf.Dρ_ψ
 second_derivative(rbf::RadialBasisFunction) = rbf.Dρρ_ψ
 hypersgradient(rbf::RadialBasisFunction) = rbf.∇θ_ψ
+
+function set_hyperparameters!(rbf::RadialBasisFunction, θ::Vector{T}) where T <: Real
+    @views begin
+        rbf.θ .= θ
+    end
+
+    return rbf
+end
 
 
 """

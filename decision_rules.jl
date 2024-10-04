@@ -18,6 +18,8 @@ function Base.show(io::IO, r::DecisionRule{F}) where F
     print(io, "DecisionRule{$(r.name)}")
 end
 
+get_name(dr::DecisionRule) = dr.name
+
 function DecisionRule(g::Function, name::String)
     dg_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> g(μ, σ, θ, sx), μ)
     d2g_dμ(μ, σ, θ, sx) = ForwardDiff.derivative(μ -> dg_dμ(μ, σ, θ, sx), μ)
@@ -112,12 +114,24 @@ function POI(; σtol=1e-8)
     return DecisionRule(poi, "POI")
 end
 
-function UCB()
-    function ucb(μ, σ, θ, sx)
-        return μ + θ[1] * σ
+function LCB()
+    @doc raw"""Lower confidence bound is \mu(x) - κ \sigma(x), a quantity we want to minimize in our minimization
+    framework for Bayesian optimization. However, we expect our acquisition functions to be things we want
+    to maximize. Hence, minimizing LCB(x) is equivalent to maximizing -LCB(x)
+    """
+    function lcb(μ, σ, θ, sx)
+        return θ[1] * σ - μ
     end
 
-    return DecisionRule(ucb, "UCB")
+    return DecisionRule(lcb, "LCB")
+end
+
+function RandomAcquisition()
+    function random_decision(μ, σ, θ, sx)
+        return 0.
+    end
+
+    return DecisionRule(random_decision, "Random")
 end
 
 

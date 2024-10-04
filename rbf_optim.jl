@@ -116,6 +116,10 @@ function multistart_base_solve!(
     guesses::Matrix{T},
     θfixed::Vector{T},
     fantasy_index::Int) where T <: Real
+    if get_name(get_decision_rule(fantasy_surrogate)) == "Random"
+        xfinal[:] = spatial_lbs .+ (spatial_ubs .- spatial_lbs) .* rand(length(spatial_lbs))
+        return nothing
+    end
     candidates = []
     
     for i in 1:size(guesses, 2)
@@ -146,6 +150,10 @@ function multistart_base_solve!(
     spatial_ubs::Vector{T},
     guesses::Matrix{T},
     θfixed::Vector{T}) where T <: Real
+    if get_name(get_decision_rule(surrogate)) == "Random"
+        xfinal[:] = spatial_lbs .+ (spatial_ubs .- spatial_lbs) .* rand(length(spatial_lbs))
+        return nothing
+    end
     candidates = []
     
     for i in 1:size(guesses, 2)

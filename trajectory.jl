@@ -125,7 +125,8 @@ attach the observable after the fact.
 """
 attach_observable!(AT::AdjointTrajectory, observable::AbstractObservable) = AT.observable = observable
 get_observable(AT::AdjointTrajectory) = AT.observable
-get_hyperparameters(T::AdjointTrajectory) = T.θ
+get_hyperparameters(T::AdjointTrajectory) = @view T.θ[:]
+get_hyperparameters(T::AdjointTrajectory) = T.θ[:]
 
 
 struct TrajectoryParameters
@@ -183,11 +184,18 @@ end
 
 get_spatial_bounds(tp::TrajectoryParameters) = (tp.spatial_lbs, tp.spatial_ubs)
 each_trajectory(tp::TrajectoryParameters; start::Int = 1) = start:tp.mc_iters
+# get_samples_rnstream(tp::TrajectoryParameters; sample_index) = @view tp.rnstream_sequence[sample_index, :, :]
+# get_starting_point(tp::TrajectoryParameters) = @view tp.x0[:]
+# get_hyperparameters(tp::TrajectoryParameters) = @view tp.θ[:]
 get_samples_rnstream(tp::TrajectoryParameters; sample_index) = tp.rnstream_sequence[sample_index, :, :]
-get_starting_point(tp::TrajectoryParameters) = tp.x0
-get_hyperparameters(tp::TrajectoryParameters) = tp.θ
+get_starting_point(tp::TrajectoryParameters) = tp.x0[:]
+get_hyperparameters(tp::TrajectoryParameters) = tp.θ[:]
 get_horizon(tp::TrajectoryParameters) = tp.horizon
-set_starting_point!(tp::TrajectoryParameters, x::AbstractVector) = tp.x0[:] = x
+function set_starting_point!(tp::TrajectoryParameters, x::AbstractVector)
+    @views begin
+        tp.x0[:] .= x
+    end
+end
 
 
 """

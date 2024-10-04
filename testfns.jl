@@ -9,12 +9,12 @@ import Base:+, *
 #     f::Function
 #     ∇f::Function
 # end
-struct TestFunction{T <: Real, N, F, G}
-    dim::Int                      # Dimension (remains as Int)
-    bounds::Matrix{T}             # Matrix with elements of type T <: Real
-    xopt::NTuple{N, Vector{T}}    # N-tuple of vectors with elements of type T
-    f::F                          # Function (generic, remains as F)
-    ∇f::G                         # Gradient function (generic, remains as G)
+struct TestFunction
+    dim::Int
+    bounds
+    xopt
+    f
+    ∇f
 end
 
 
@@ -120,6 +120,23 @@ function tplot(f::TestFunction)
     end
 end
 
+function TestLevy(d)
+    f(x) = begin
+        w = 1 .+ (x .- 1) ./ 4
+        term1 = sin(π * w[1])^2
+        sum_terms = sum((w[1:end-1] .- 1).^2 .* (1 .+ 10 .* sin(π .* w[1:end-1] .+ 1).^2))
+        term3 = (w[end] - 1)^2 * (1 + sin(2 * π * w[end])^2)
+        term1 + sum_terms + term3
+    end
+
+    ∇f(x) = ForwardDiff.gradient(f, x)
+
+    dim = d
+    bounds = [-10 * ones(Float64, d); 10 * ones(Float64, d)]  # 2 x d matrix
+    xopt = (ones(Float64, d),)  # Tuple containing the optimal vector
+
+    return TestFunction(d, bounds, xopt, f, ∇f)
+end
 
 function TestBraninHoo(; a=1, b=5.1/(4π^2), c=5/π, r=6, s=10, t=1/(8π))
     function f(xy)
@@ -580,6 +597,7 @@ function TestLinearCosine1D(a=1, b=1; lb=-1.0, ub=1.0)
     xopt = (zeros(1),) # TODO
     return TestFunction(1, bounds, xopt, f, ∇f)
 end
+
 
 
 function TestShekel()
