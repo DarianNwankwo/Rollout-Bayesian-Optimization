@@ -136,6 +136,25 @@ function resize(s::Surrogate)
     )
 end
 
+function reset!(s::Surrogate, X::Matrix{T}, y::Vector{T}) where T <: Real
+    @views begin
+        d, N = size(X)
+
+        s.X[:, 1:N] = X
+        s.K[1:N, 1:N] = eval_KXX(get_kernel(s), X, σn2=s.σn2)
+        s.L[1:N, 1:N] = LowerTriangular(
+            cholesky(
+                Hermitian(
+                    s.K[1:N, 1:N]
+                )
+            ).L
+        )
+        s.c[1:N] = s.L[1:N, 1:N]' \ (s.L[1:N, 1:N] \ y)
+        s.y[1:N] = y
+        s.observed = length(y)
+    end
+end
+
 function insert!(s::Surrogate, x::Vector{T}, y::T) where T <: Real
     insert_index = get_observed(s) + 1
     s.X[:, insert_index] = x
