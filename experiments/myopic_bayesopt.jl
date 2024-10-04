@@ -200,10 +200,9 @@ function main()
     kernel_lbs, kernel_ubs = [0.1], [5.]
     Xinit = zeros(testfn.dim, INITIAL_OBSERVATIONS)
     true_minimum = testfn.f(testfn.xopt[1])
-    println("True Minimum: ", true_minimum)
 
     # Preallocate entire surrogate object and reuse
-    sur = Surrogate(kernel, [0.;;], [0.]; capacity=BUDGET, σn2=σn2)
+    sur = Surrogate(kernel, zeros(testfn.dim, 1), [0.]; capacity=BUDGET, σn2=σn2)
 
     for (acq_index, decision_rule) in enumerate(decision_rules)
         acq_name = acquisitions[acq_index]

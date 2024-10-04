@@ -141,7 +141,7 @@ function reset!(s::Surrogate, X::Matrix{T}, y::Vector{T}) where T <: Real
         d, N = size(X)
 
         s.X[:, 1:N] = X
-        s.K[1:N, 1:N] = eval_KXX(get_kernel(s), X, σn2=s.σn2)
+        s.K[1:N, 1:N] = eval_KXX(get_kernel(s), s.X[:, 1:N], σn2=s.σn2)
         s.L[1:N, 1:N] = LowerTriangular(
             cholesky(
                 Hermitian(
