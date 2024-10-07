@@ -18,7 +18,7 @@ function parse_command_line(args)
         "--starts"
             action = :store_arg
             help = "Number of random starts for inner policy optimization (default: 16)"
-            default = 16
+            default = 64
             arg_type = Int
         "--trials"
             action = :store_arg
@@ -27,8 +27,8 @@ function parse_command_line(args)
             arg_type = Int
         "--budget"
             action = :store_arg
-            help = "Maximum budget for bayesian optimization (default: 15)"
-            default = 15
+            help = "Maximum budget for bayesian optimization (default: 100)"
+            default = 100
             arg_type = Int
         "--function-name"
             action = :store_arg
