@@ -124,7 +124,7 @@ function TestLevy(d)
     f(x) = begin
         w = 1 .+ (x .- 1) ./ 4
         term1 = sin(π * w[1])^2
-        sum_terms = sum((w[1:end-1] .- 1).^2 .* (1 .+ 10 .* sin(π .* w[1:end-1] .+ 1).^2))
+        sum_terms = sum((w[1:end-1] .- 1).^2 .* (1 .+ 10 .* sin.(π .* w[1:end-1] .+ 1).^2))
         term3 = (w[end] - 1)^2 * (1 + sin(2 * π * w[end])^2)
         term1 + sum_terms + term3
     end
@@ -132,7 +132,9 @@ function TestLevy(d)
     ∇f(x) = ForwardDiff.gradient(f, x)
 
     dim = d
-    bounds = [-10 * ones(Float64, d); 10 * ones(Float64, d)]  # 2 x d matrix
+    bounds = zeros(d, 2)
+    bounds[:, 1] .= -10.
+    bounds[:, 2] .= 10.
     xopt = (ones(Float64, d),)  # Tuple containing the optimal vector
 
     return TestFunction(d, bounds, xopt, f, ∇f)
@@ -719,8 +721,8 @@ function TestGriewank(d)
     end
 
     bounds = zeros(d, 2)
-    bounds[:, 1] = -600.
-    bounds[:, 2] = 600.
+    bounds[:, 1] .= -600.
+    bounds[:, 2] .= 600.
     xopt = (zeros(d),)
 
     return TestFunction(d, bounds, xopt, f, ∇f)
