@@ -470,8 +470,7 @@ function update!(fs::FantasySurrogate, s::Surrogate)
         fs.L[N, 1:N - 1] = LxX_update[1:N - 1]
         fs.L[N, N] = LxX_update[N]
         # Update the coefficient vector
-        fs.cs[1] = get_coefficients(s)[1:N]
-        
+        fs.cs[1] = get_coefficients(s)[1:N] 
     end
 end
 

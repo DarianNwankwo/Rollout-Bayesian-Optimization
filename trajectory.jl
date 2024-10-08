@@ -125,8 +125,8 @@ attach the observable after the fact.
 """
 attach_observable!(AT::AdjointTrajectory, observable::AbstractObservable) = AT.observable = observable
 get_observable(AT::AdjointTrajectory) = AT.observable
-get_hyperparameters(T::AdjointTrajectory) = @view T.θ[:]
 get_hyperparameters(T::AdjointTrajectory) = T.θ[:]
+set_horizon!(T::AdjointTrajectory, h::Int) =  T.horizon = h
 
 
 struct TrajectoryParameters

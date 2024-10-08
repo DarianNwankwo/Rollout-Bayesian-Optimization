@@ -4,7 +4,7 @@ myopic_configurations=(
     # "--function-name braninhoo --budget 100 --starts 64 --trials 60"
     # "--function-name hartmann6d --budget 100 --starts 64 --trials 60"
     # "--function-name sixhump --budget 100 --starts 64 --trials 60"
-    "--function-name levy10d --budget 100 --starts 64 --trials 60"
+    # "--function-name levy10d --budget 100 --starts 64 --trials 60"
     # "--function-name goldsteinprice --budget 100 --starts 64 --trials 60"
     "--function-name griewank3d --budget 100 --starts 64 --trials 60"
 )
