@@ -48,17 +48,6 @@ function (so::StochasticObservable{FS})(x::Vector{T}, θ::Vector{T})::Number whe
     return observation
 end
 
-function (so::StochasticObservable{FS})(x::Vector{T})::Number where {T <: Real, FS <: FantasyRBFsurrogate}
-    @assert so.step < so.trajectory_length "Maximum invocations have been used"
-    observation, gradient_... = gp_draw(
-        so.fs, x, stdnormal=so.stdnormal[:, so.step + 1], with_gradient=true
-    )
-    increment!(so)
-    update!(so, observation, gradient_)
-
-    return observation
-end
-
 
 mutable struct DeterministicObservable <: AbstractObservable
     f
