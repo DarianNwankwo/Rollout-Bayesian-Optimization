@@ -193,16 +193,13 @@ function main()
     println("Running experiment for $(payload.name)...")
     testfn = payload.fn(payload.args...)
     lbs, ubs = testfn.bounds[:,1], testfn.bounds[:,2]
-    # Indices for running test on specific acquisitions
-    strategy_indices = [1, 2, 3, 4]
-
 
     metrics_to_collect = ["times", "gaps", "allocations", "simple_regret", "minimum_observations"]
-    acquisitions = ["ei", "poi", "lcb", "random"]
-    dr_hypers = [[0.], [0.], [2.], [0.]]
-    decision_rules = [EI(), POI(), LCB(), RandomAcquisition()]
+    acquisitions = ["rollout_$(HORIZON)_ei", "rollout_$(HORIZON)_poi", "rollout_$(HORIZON)_lcb"]
+    dr_hypers = [[0.], [0.], [2.]]
+    decision_rules = [EI(), POI(), LCB()]
     # Allocate space for timing information
-    timing_statistics = [zeros(BUDGET) for acq in acquisitions]
+    timing_statistics = [zeros(BUDGET) for _ in acquisitions]
     # Create the CSV for the current test function being evaluated
     # Create the CSV for the current test function being evaluated
     # Create the CSV for the simple regrets
@@ -235,11 +232,16 @@ function main()
     true_minimum = testfn.f(testfn.xopt[1])
 
     # Preallocate entire surrogate object and reuse
-    sur = Surrogate(kernel, zeros(testfn.dim, 1), [0.]; capacity=BUDGET, σn2=σn2)
+    sur = Surrogate(kernel, zeros(testfn.dim, 1), [0.]; capacity=BUDGET + INITIAL_OBSERVATIONS, σn2=σn2)
+    fsur = FantasySurrogate(sur, HORIZON)
+    AT = Trajectory(sur, fsur, start=zeros(testfn.dim), hypers=zeros(1), horizon=HORIZON)
 
+    # Run experiment across each base decision rule up to some horizon
     for (acq_index, decision_rule) in enumerate(decision_rules)
         acq_name = acquisitions[acq_index]
+        # Set the base decision rule on the surrogate and fantasized surrogate
         set_decision_rule!(sur, decision_rule)
+        set_decision_rule!(fsur, decision_rule)
 
         println("Conduction Experiments with Acquisition = ", decision_rule.name)
         for trial in 1:NUMBER_OF_TRIALS
@@ -247,6 +249,8 @@ function main()
             # Initialize surrogate model
             Xinit[:, :] = initial_samples[trial]
             yinit = testfn.f.(eachcol(Xinit))
+            # Since our surrogate is preallocated, this reset! here also corresponds to conditioning
+            # on our initial observations
             reset!(sur, Xinit, yinit)
             initial_best = minimum(yinit)
 

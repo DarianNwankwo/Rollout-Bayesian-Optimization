@@ -1,202 +1,47 @@
 """
 Where j represents the jth column of all of our observations we want to compute the perturbation of.
 """
-function compute_policy_perturbation(
-    T::ForwardTrajectoryWithMOGP,
-    xnext::Vector{Float64},
-    jacobian_matrix::Matrix{Float64},
-    total_observations::Int,
-    j::Int)::Matrix{Float64}
-    # Setup perturbation matrix where all columns, except 1, are zero.
-    # println("Apply Perturbation to Column $(T.mfs.known_observed + j)")
-    δXi = zeros(size(jacobian_matrix, 1), total_observations)
+# function compute_policy_perturbation(
+#     T::ForwardTrajectory,
+#     xnext::Vector{Float64},
+#     jacobian_matrix::Matrix{Float64},
+#     total_observations::Int,
+#     j::Int)::Matrix{Float64}
+#     δXi = zeros(size(jacobian_matrix, 1), total_observations)
 
-    # Evaluate surrogate at location from policy solve
-    sxi = T.fs(xnext)
+#     # Evaluate surrogate at location from policy solve
+#     fs = get_fantasy_surrogate(T)
+#     sxi = fs(xnext)
 
-    # Placeholder for collecting all perturbations
-    fantasy_begin_ndx = T.mfs.known_observed + 1
-    # println("Fantasy Begin Index: $(fantasy_begin_ndx)")
-    ∇ys = [zeros(length(xnext)) for i in 1:total_observations]
-    ∇ys[fantasy_begin_ndx + j - 1] = T.mfs.∇y[:, j]
+#     # Placeholder for collecting all perturbations
+#     fantasy_begin_ndx = get_known_observations(fs) + 1
+#     ∇ys = [zeros(length(xnext)) for i in 1:total_observations]
+#     ∇ys[fantasy_begin_ndx + j - 1] = get_gradient(get_observable(T), at=j)
 
-    # Intermediate storage of each column computed in the current perturbation
-    P = zeros(length(xnext), length(xnext))
-    
-    # Perturb the gradient of the policy according to the perturbations in the jacobian matrix
-    for (column_ndx, direction) in enumerate(eachcol(jacobian_matrix))
-        δXi[:, fantasy_begin_ndx + j - 1] = direction
-        # Compute perturbation
-        δs = fit_δsurrogate(T.fs, δXi, ∇ys)
-        δsxi = δs(sxi)
-        # println("Perturbation Matrix: $(δXi)")
-        # println("δsxi.μ: $(δsxi.μ) -- δsxi.∇μ: $(δsxi.∇μ) -- δsxi.kx: $(δsxi.kx) -- δsxi.∇kx: $(δsxi.∇kx) -- δsxi.∇EI: $(δsxi.∇EI) -- δsxi.EI: $(δsxi.EI)")
-        P[:, column_ndx] = δsxi.∇EI
-    end
+#     # Intermediate storage of each column computed in the current perturbation
+#     P = zeros(length(xnext), length(xnext))
 
-    return P
-end
-
-function compute_policy_perturbation(
-    T::ForwardTrajectory,
-    xnext::Vector{Float64},
-    jacobian_matrix::Matrix{Float64},
-    total_observations::Int,
-    j::Int)::Matrix{Float64}
-    δXi = zeros(size(jacobian_matrix, 1), total_observations)
-
-    # Evaluate surrogate at location from policy solve
-    fs = get_fantasy_surrogate(T)
-    sxi = fs(xnext)
-
-    # Placeholder for collecting all perturbations
-    fantasy_begin_ndx = get_known_observations(fs) + 1
-    ∇ys = [zeros(length(xnext)) for i in 1:total_observations]
-    ∇ys[fantasy_begin_ndx + j - 1] = get_gradient(get_observable(T), at=j)
-
-    # Intermediate storage of each column computed in the current perturbation
-    P = zeros(length(xnext), length(xnext))
-
-    # Perturb the gradient of the policy according to the perturbations in the jacobian matrix
-    for (column_ndx, direction) in enumerate(eachcol(jacobian_matrix))
-        δXi[:, fantasy_begin_ndx + j - 1] = direction
+#     # Perturb the gradient of the policy according to the perturbations in the jacobian matrix
+#     for (column_ndx, direction) in enumerate(eachcol(jacobian_matrix))
+#         δXi[:, fantasy_begin_ndx + j - 1] = direction
         
-        # Compute perturbation
-        δs = fit_δsurrogate(get_fantasy_surrogate(T), δXi, ∇ys)
-        δsxi = δs(sxi)
+#         # Compute perturbation
+#         δs = fit_δsurrogate(get_fantasy_surrogate(T), δXi, ∇ys)
+#         δsxi = δs(sxi)
 
-        P[:, column_ndx] = δsxi.∇EI
-    end
+#         P[:, column_ndx] = δsxi.∇EI
+#     end
 
-    return P
-end
+#     return P
+# end
 
-
-function rollout!(
-    T::ForwardTrajectoryWithMOGP;
-    lowerbounds::Vector{Float64},
-    upperbounds::Vector{Float64},
-    rnstream::Matrix{Float64},
-    xstarts::Matrix{Float64})
-    # Initial draw at predetermined location not chosen by policy
-    f0, ∇f0 = gp_draw(T.mfs, T.x0; stdnormal=(@view rnstream[:,1]))
-
-    # Update surrogate, perturbed surrogate, and multioutput surrogate
-    condition!(T.fs, T.x0, f0)
-    update_multioutput_fsurrogate!(T.mfs, T.x0, f0, ∇f0)
-
-    # Preallocate for newton solves
-    xnext = zeros(length(T.x0))
-
-    # Perform rollout for fantasized trajectories
-    for j in 1:T.h
-        # Solve base acquisition function to determine next sample location
-        xnext .= multistart_ei_solve(T.fs, lowerbounds, upperbounds, xstarts)
-
-        # Draw fantasized sample at proposed location after base acquisition solve
-        fi, ∇fi = gp_draw(T.mfs, xnext; stdnormal=rnstream[:, j+1])
-       
-        # Placeholder for jacobian matrix
-        δxi_jacobian::Matrix{Float64} = zeros(length(xnext), length(xnext))
-        # Intermediate matrices before summing placeholder
-        δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
-
-        total_observations = T.mfs.known_observed + T.mfs.fantasies_observed
-        for (j, jacobian) in enumerate(T.jacobians)
-            # Compute perturbation to each spatial location
-            P = compute_policy_perturbation(T, xnext, jacobian, total_observations, j)
-            push!(δxi_intermediates, P)
-        end
-
-        # Sum all perturbations
-        δxi_intermediates = reduce(+, δxi_intermediates)
-        # δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        if det(T.fs(xnext).HEI) < 1e-16
-            δxi_jacobian .= zeros(length(xnext), length(xnext))
-            # δxi_jacobian .= 0.
-        else
-            δxi_jacobian .= -T.fs(xnext).HEI \ δxi_intermediates
-        end
-
-        # Update surrogate, perturbed surrogate, and multioutput surrogate
-        condition!(T.fs, xnext, fi)
-        update_multioutput_fsurrogate!(T.mfs, xnext, fi, ∇fi)
-
-        # Update jacobian matrix
-        push!(T.jacobians, δxi_jacobian)
-
-        if fi < T.fmin
-            T.fmin = fi
-        end
-    end
-
-    return nothing
-end
 
 function rollout!(
-    FT::ForwardTrajectory;
-    lowerbounds::Vector{T},
-    upperbounds::Vector{T},
-    get_observation::AbstractObservable,
-    xstarts::Matrix{T}) where T <: Real
-    # Initial draw at predetermined location not chosen by an optimization routine
-    f0 = get_observation(get_starting_point(FT))
-
-    condition!(get_fantasy_surrogate(FT), get_starting_point(FT), f0)
-
-    xnext = zeros(length(get_starting_point(FT)))
-
-    # Perform rollout for constructing the fantasized trajectory
-    for j in 1:get_horizon(FT)
-        # Solve the base decision rule to determine the next sample location
-        xnext .= multistart_ei_solve(
-            get_fantasy_surrogate(FT),
-            lowerbounds,
-            upperbounds,
-            xstarts,
-        )
-
-        # Draw fantasized sample at the proposed location
-        fi = get_observation(xnext)
-
-        # Intermediate matrices for reducing over jacobian solves
-        δxi_jacobian = zeros(length(xnext), length(xnext))
-        δxi_intermediates = Array{Matrix{Float64}}(undef, 0)
-        
-        # Compute perturbation to each spatial location
-        for i in 1:j
-            P = compute_policy_perturbation(
-                FT,
-                xnext,
-                get_jacobian(FT, index=i),
-                get_total_observations(get_fantasy_surrogate(FT)),
-                i
-            )
-            push!(δxi_intermediates, P)
-        end
-
-        # Sum all perturbations
-        δxi_intermediates = reduce(+, δxi_intermediates)
-        fs = get_fantasy_surrogate(FT)
-        fsx = fs(xnext)
-
-        if det(fsx.HEI) > 1e-16
-            δxi_jacobian .= -fsx.HEI \ δxi_intermediates
-        end
-
-        set_jacobian!(FT, jacobian=δxi_jacobian, index=j+1)
-
-        # Update fantasized surrogate
-        condition!(get_fantasy_surrogate(FT), xnext, fi)
-    end
-end
-
-function rollout!(
-    T::AdjointTrajectory;
+    T::Trajectory;
     lowerbounds::Vector{T1},
     upperbounds::Vector{T1},
-    get_observation::AbstractObservable,
-    xstarts::Matrix{T1}) where T1 <: Real
+    get_observation::AO,
+    xstarts::Matrix{T1}) where {T1 <: Real, AO <: AbstractObservable}
     # Initial draw at predetermined location not chosen by policy
     f0 = get_observation(get_starting_point(T), get_hyperparameters(T))
 
@@ -229,14 +74,6 @@ function rollout!(
 end
 
 
-function get_fantasy_observations(fs::AbstractFantasySurrogate)
-    y = get_observations(fs)
-    N = get_known_observations(fs)
-    M = get_total_observations(fs)
-    return y[N+1:M]
-end
-
-
 function get_minimum_index(T::AbstractTrajectory)
     y = get_observations(get_base_surrogate(T))
     y_fantasies = get_fantasy_observations(get_fantasy_surrogate(T))
@@ -245,20 +82,7 @@ function get_minimum_index(T::AbstractTrajectory)
 end
 
 
-function sample(T::ForwardTrajectoryWithMOGP)
-    @assert T.fs.fantasies_observed == get_horizon(T) + 1 "Cannot sample from a trajectory that has not been rolled out"
-    fantasy_slice = T.fs.known_observed + 1 : T.fs.known_observed + T.fs.fantasies_observed
-    ∇f_offset = T.fs.known_observed
-    return [
-        (
-            x=T.mfs.X[:,i],
-            y=T.mfs.y[i],
-            ∇f=T.mfs.∇y[:, i - ∇f_offset]
-        ) for i in fantasy_slice
-    ]
-end
-
-function sample(T::Union{AdjointTrajectory, ForwardTrajectory})
+function sample(T::AbstractTrajectory)
     fs = get_fantasy_surrogate(T)
     m = get_fantasies_observed(fs)
     n = get_known_observations(fs)
@@ -288,41 +112,9 @@ function resolve(T::AbstractTrajectory)
     return max(fmini - fb, 0.)
 end
 
-function gradient(T::ForwardTrajectoryWithMOGP)
-    y = get_observations(get_base_surrogate(T))
-    fmini = minimum(y)
-    best_ndx, best_step = best(T)
-    xb, fb, ∇fb = best_step
-
-    if fmini <= fb
-        return zeros(length(xb))
-    end
-
-    if best_ndx == 0
-        return -∇fb
-    end
-    
-    opt_jacobian = T.jacobians[best_ndx + 1]
-    return transpose(-∇fb'*opt_jacobian)
-end
-
-function gradient(T::ForwardTrajectory)
-    y = get_observations(get_base_surrogate(T))
-    fmini = minimum(y)
-    best_ndx, best_step = best(T)
-    xb, fb = best_step
-    ∇fb = get_gradient(get_observable(T), at=best_ndx + 1)
-
-    if fmini <= fb return zeros(length(xb)) end
-
-    if best_ndx == 0 return -∇fb end
-    
-    opt_jacobian = T.jacobians[best_ndx + 1]
-    return transpose(-∇fb'*opt_jacobian)
-end
 
 
-function recover_policy_solve(T::AdjointTrajectory; solve_index::Int64)
+function recover_policy_solve(T::Trajectory; solve_index::Int64)
     # @assert solve_index > 0 "The first step isn't chosen via an optimization problem"
     @assert solve_index <= get_horizon(T) + 1 "Can only recover policy solves up to, and including, step $(T.h + 1)"
 
@@ -335,7 +127,7 @@ function recover_policy_solve(T::AdjointTrajectory; solve_index::Int64)
 end
 
 function solve_dual_y(
-    T::AdjointTrajectory,
+    T::Trajectory,
     x_duals::Vector{Vector{Float64}};
     optimal_index::Int,
     solve_index::Int)
@@ -359,7 +151,7 @@ function solve_dual_y(
 end
 
 function solve_dual_x(
-    T::AdjointTrajectory,
+    T::Trajectory,
     y_duals::Vector{Float64},
     x_duals::Vector{Vector{Float64}};
     optimal_index::Int, 
@@ -398,7 +190,7 @@ function solve_dual_x(
     return x_dual
 end
 
-function gather_g(T::AdjointTrajectory; optimal_index::Int)
+function gather_g(T::Trajectory; optimal_index::Int)
     sx = recover_policy_solve(T, solve_index=0)
     dim = length(sx.∇μ)
     g::Vector{Matrix{Float64}} = [sx.∇μ']
@@ -425,7 +217,7 @@ function gather_g(T::AdjointTrajectory; optimal_index::Int)
     return g
 end
 
-function gather_q(T::AdjointTrajectory; optimal_index::Int)
+function gather_q(T::Trajectory; optimal_index::Int)
     q::Vector{AbstractMatrix} = []
 
     for solve_index in 1:optimal_index
@@ -436,7 +228,7 @@ function gather_q(T::AdjointTrajectory; optimal_index::Int)
     return q
 end
 
-function gradient(T::AdjointTrajectory)
+function gradient(T::Trajectory)
     fmini = minimum(get_observations(get_base_surrogate(T)))
     t, best_step = best(T)
     fb = best_step.y
@@ -493,237 +285,8 @@ function gradient(T::AdjointTrajectory)
     return (∇x=-grad_x, ∇θ=-grad_θ)
 end
 
-function simulate_trajectory(
-    s::RBFsurrogate,
-    tp::TrajectoryParameters;
-    xstarts::Matrix{T},
-    resolutions::Vector{T},
-    gradient_resolutions::Matrix{T}) where T <: Real
-    deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_spatial_bounds(tp)
-
-    for sample_index in each_trajectory(tp)
-        # Sample rollout trajectory
-        FT = ForwardTrajectory(
-            base_surrogate=deepcopy_s,
-            start=get_starting_point(tp),
-            horizon=get_horizon(tp)
-        )
-        sampler = StochasticObservable(
-            surrogate=get_fantasy_surrogate(FT),
-            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
-            max_invocations=get_horizon(FT) + 1
-        )
-        attach_observable!(FT, sampler)
-
-        rollout!(
-            FT,
-            lowerbounds=lowerbounds,
-            upperbounds=upperbounds,
-            get_observation=get_observable(FT),
-            xstarts=xstarts
-        )
-
-        # Evaluate the rolled out trajectory
-        resolutions[sample_index] = resolve(FT)
-        gradient_resolutions[:, sample_index] = gradient(FT)
-    end
-
-    return Distributions.mean(resolutions), Distributions.mean(gradient_resolutions)
-end
-
-function d_simulate_trajectory(
-    s::RBFsurrogate,
-    tp::TrajectoryParameters;
-    xstarts::AbstractMatrix,
-    func::Function,
-    grad::Function)
-    deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_spatial_bounds(tp)
-
-    # Sample rollout trajectory
-    FT = ForwardTrajectory(
-        base_surrogate=deepcopy_s,
-        start=get_starting_point(tp),
-        horizon=get_horizon(tp)
-    )
-    sampler = DeterministicObservable(
-        func=func,
-        gradient=grad,
-        max_invocations=get_horizon(FT) + 1
-    )
-    attach_observable!(FT, sampler)
-
-    rollout!(
-        FT,
-        lowerbounds=lowerbounds,
-        upperbounds=upperbounds,
-        get_observation=get_observable(FT),
-        xstarts=xstarts
-    )
-
-    μxθ = resolve(FT)
-    g_ = gradient(FT)
-    zsx = zeros(length(get_starting_point(tp)))
-    zsθ = zeros(length(get_hyperparameters(tp)))
-
-    return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=0., ∇μx=g_, σ_∇μx=zsx, ∇μθ=g_, σ_∇μθ=zsθ)
-end
-
-
-function simulate_forward_trajectory(
-    s::RBFsurrogate,
-    tp::TrajectoryParameters,
-    xstarts::Matrix{Float64};
-    resolutions::Vector{Float64},
-    gradient_resolutions::Matrix{Float64})
-    deepcopy_s = Base.deepcopy(s)
-    lowerbounds, upperbounds = get_spatial_bounds(tp)
-
-    for sample_index in each_trajectory(tp)
-        # Rollout trajectory
-        T = ForwardTrajectoryWithMOGP(base_surrogate=deepcopy_s, start=get_starting_point(tp), horizon=get_horizon(tp))
-        rollout!(
-            T,
-            lowerbounds=lowerbounds,
-            upperbounds=upperbounds,
-            rnstream=get_samples_rnstream(tp, sample_index=sample_index),
-            xstarts=xstarts
-        )
-
-        # Evaluate rolled out trajectory
-        resolutions[sample_index] = resolve(T)
-        gradient_resolutions[:, sample_index] = gradient(T)
-    end
-
-    # Average across trajectories
-    μx = Distributions.mean(resolutions)
-    ∇μx = Distributions.mean(gradient_resolutions, dims=2)
-    std_μx = Distributions.std(resolutions, mean=μx)
-
-    return μx, std_μx, ∇μx
-end
-
-# function simulate_adjoint_trajectory
-
 function simulate_adjoint_trajectory(
-    s::Surrogate,
-    tp::TrajectoryParameters;
-    inner_solve_xstarts::AbstractMatrix,
-    resolutions::AbstractVector,
-    spatial_gradients_container::Union{Nothing, AbstractMatrix} = nothing,
-    hyperparameter_gradients_container::Union{Nothing, AbstractMatrix} = nothing)
-    slbs, subs = get_spatial_bounds(tp)
-    T = AdjointTrajectory(
-        s,
-        start=get_starting_point(tp),
-        hypers=get_hyperparameters(tp),
-        horizon=get_horizon(tp)
-    )
-
-    for sample_index in each_trajectory(tp)
-        # Rollout trajectory
-        sampler = StochasticObservable(
-            surrogate=get_fantasy_surrogate(T), 
-            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
-            max_invocations=get_horizon(tp) + 1
-        )
-        attach_observable!(T, sampler)
-
-        rollout!(
-            T,
-            lowerbounds=slbs,
-            upperbounds=subs,
-            get_observation=get_observable(T),
-            xstarts=inner_solve_xstarts
-        )
-
-        # Evaluate rolled out trajectory
-        resolutions[sample_index] = resolve(T)
-        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
-            ∇x, ∇θ = gradient(T)
-            spatial_gradients_container[:, sample_index] = ∇x
-            hyperparameter_gradients_container[:, sample_index] = ∇θ
-        end
-
-        reset!(get_fantasy_surrogate(T))
-    end
-
-    μxθ = Distributions.mean(resolutions)
-    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
-    
-    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
-        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
-    else
-        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
-        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
-        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
-        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
-        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
-    end
-end
-
-function simulate_adjoint_trajectory(
-    s::Surrogate,
-    fs::FantasySurrogate,
-    tp::TrajectoryParameters;
-    inner_solve_xstarts::Matrix{T1},
-    resolutions::Vector{T1},
-    spatial_gradients_container::Union{Nothing, Matrix{T1}} = nothing,
-    hyperparameter_gradients_container::Union{Nothing, Matrix{T1}} = nothing) where T1 <: Real
-    slbs, subs = get_spatial_bounds(tp)
-    T = AdjointTrajectory(
-        s,
-        fs,
-        start=get_starting_point(tp),
-        hypers=get_hyperparameters(tp),
-        horizon=get_horizon(tp)
-    )
-
-    for sample_index in each_trajectory(tp)
-        # Rollout trajectory
-        sampler = StochasticObservable(
-            surrogate=get_fantasy_surrogate(T), 
-            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
-            max_invocations=get_horizon(tp) + 1
-        )
-        attach_observable!(T, sampler)
-
-        rollout!(
-            T,
-            lowerbounds=slbs,
-            upperbounds=subs,
-            get_observation=get_observable(T),
-            xstarts=inner_solve_xstarts
-        )
-
-        # Evaluate rolled out trajectory
-        resolutions[sample_index] = resolve(T)
-        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
-            ∇x, ∇θ = gradient(T)
-            spatial_gradients_container[:, sample_index] = ∇x
-            hyperparameter_gradients_container[:, sample_index] = ∇θ
-        end
-
-        reset!(get_fantasy_surrogate(T))
-    end
-
-    μxθ = Distributions.mean(resolutions)
-    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
-    
-    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
-        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
-    else
-        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
-        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
-        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
-        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
-        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
-    end
-end
-
-function simulate_adjoint_trajectory(
-    T::AdjointTrajectory,
+    T::Trajectory,
     tp::TrajectoryParameters;
     inner_solve_xstarts::Matrix{T1},
     resolutions::Vector{T1},

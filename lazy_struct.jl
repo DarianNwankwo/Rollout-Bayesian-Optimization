@@ -19,6 +19,7 @@ struct LazyStruct
     LazyStruct(s :: LazyStruct) = new(copy(s.thunks), copy(s.values))
 end
 
+get_observations(ls::LazyStruct) = ls.y
 
 """
 When a property is set on the LazyStruct, we store it as a thunk. The thunk

@@ -7,6 +7,8 @@ using ForwardDiff
 using Distributed
 using Statistics
 using SharedArrays
+using Roots
+using FastGaussQuadrature
 
 
 include("testfns.jl")
