@@ -40,19 +40,19 @@ function base_solve(
     θfixed::Vector{T}) where T <: Real
 
     function fun(x)
-        fantasy_surrogate_at_xθ = surrogate(x, θfixed)
-        return -eval(fantasy_surrogate_at_xθ)
+        surrogate_at_xθ = surrogate(x, θfixed)
+        return -eval(surrogate_at_xθ)
     end
     
     function fun_grad!(g, x)
-        fantasy_surrogate_at_xθ = surrogate(x, θfixed)
-        g[:] = -gradient(fantasy_surrogate_at_xθ)
+        surrogate_at_xθ = surrogate(x, θfixed)
+        g[:] = -gradient(surrogate_at_xθ)
     end
     
     function fun_hess!(h, x)
-        fantasy_surrogate_at_xθ = surrogate(x, θfixed)
+        surrogate_at_xθ = surrogate(x, θfixed)
 
-        h[:, :] .= -hessian(fantasy_surrogate_at_xθ)
+        h[:, :] .= -hessian(surrogate_at_xθ)
     end
 
     df = TwiceDifferentiable(fun, fun_grad!, fun_hess!, xstart)
@@ -60,7 +60,6 @@ function base_solve(
     res = optimize(
         df, dfc, xstart, IPNewton(),
         Optim.Options(x_tol=1e-3, f_tol=1e-3)
-
     )
     
     return Optim.minimizer(res), res

@@ -23,6 +23,8 @@ mutable struct Trajectory <: AbstractTrajectory
     observable::Union{Missing, AbstractObservable}
 end
 
+set_start!(T::Trajectory, x0::Vector{Float64}) = T.x0 .= x0
+
 function Trajectory(
     base_surrogate::Surrogate,
     fantasy_surrogate::FantasySurrogate;
@@ -34,13 +36,6 @@ function Trajectory(
     return Trajectory(base_surrogate, fantasy_surrogate, start, hypers, horizon, observable)
 end
 
-"""
-Attach an observable to an `AdjointTrajectory`.
-
-The AdjointTrajectory needs to be created first. The observable expects a mechanism for
-fantasized samples, which is created once the AdjointTrajectory struct is created. We then
-attach the observable after the fact.
-"""
 attach_observable!(AT::Trajectory, observable::AbstractObservable) = AT.observable = observable
 set_horizon!(T::Trajectory, h::Int) =  T.horizon = h
 
@@ -115,12 +110,12 @@ end
 A convenient wrapper for the expected outcome of simulating a full trajectory.
 """
 struct ExpectedTrajectoryOutput
-    μxθ::Real
-    σ_μxθ::Real
-    ∇μx::Union{AbstractVector{<:Real}, Nothing}
-    σ_∇μx::Union{AbstractVector{<:Real}, Nothing}
-    ∇μθ::Union{AbstractVector{<:Real}, Nothing}
-    σ_∇μθ::Union{AbstractVector{<:Real}, Nothing}
+    μxθ::Float64
+    σ_μxθ::Float64
+    ∇μx::Union{Vector{Float64}, Nothing}
+    σ_∇μx::Union{Vector{Float64}, Nothing}
+    ∇μθ::Union{Vector{Float64}, Nothing}
+    σ_∇μθ::Union{Vector{Float64}, Nothing}
 end
 
 function ExpectedTrajectoryOutput(;

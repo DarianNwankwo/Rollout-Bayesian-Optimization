@@ -89,27 +89,6 @@ function stdize(series; a=0, b=1)
     return [a + (s - smin) / (smax - smin) * (b - a) for s in series]
 end
 
-function print_divider(char="-"; len=80)
-    for _ in 1:len print(char) end
-    println()
-end
-
-"""
-Returns true as long as we need to keep performing steps of our optimization
-iteration. As soon as we reach our maximum iteration count we terminate, but
-if the pairwise difference is sufficiently large (> tol), we believe we can
-keep improving and continue our iteration. If the pairwise difference is not
-large, there is a chance we can improve, so we continue. The next iteration
-then checks if our rate of change has gone from increasing to decreasing,
-w.l.o.g.
-"""
-function sgd_hasnot_converged(iter, grads, max_iters; tol=1e-4)
-    # bpdiff captures the relative improvement 
-    return ((!(iter > 3 && pairwise_diff_issmall(grads[end-1:end]..., tol=tol))
-           || (iter > 3 && is_still_increasing(grads)))
-           && iter < max_iters)
-end
-
 
 """
 Generate a batch of N points inbounds relative to the lowerbounds and
@@ -126,18 +105,6 @@ function generate_batch(N; lbs, ubs, ϵinterior=1e-2)
     return B
 end
 
-function filter_batch!(B::Matrix{Float64}, X::Matrix{Float64}; ϵ=1e-2)
-    # For all the points in the batch B, check if any of the points in X are within ϵ
-    # of the points in B. If so, remove that point from B.
-    for i = 1:size(B, 2)
-        for j = 1:size(X, 2)
-            if norm(B[:,i] - X[:,j]) < ϵ
-                B = B[:, 1:i-1]
-                break
-            end
-        end
-    end
-end
 
 centered_fd(f, u, du, h) = (f(u+h*du)-f(u-h*du)) / (2h)
 
@@ -247,6 +214,24 @@ function to(n; key="MB")
     return "$(conversion)$(key)"
 end
 
+function generate_indices(num_nodes::Int, max_depth::Int)
+    as_tuples = collect(product(fill(1:num_nodes, max_depth)...))
+    as_vectors = [vcat(each_pair...) for each_pair in as_tuples]
+    return as_vectors
+end
+
+function rollout_solve(
+    xstart::Vector{T},
+    AT::Trajectory,
+    tp::TrajectoryParameters,
+    es::ExperimentSetup
+) where T <: Real
+
+end
+
+function multistart_rollout_solve!()
+end
+
 function stochastic_solve(;
     optimizer::StochasticGradientAscent,
     surrogate::Surrogate,
@@ -287,7 +272,7 @@ function deterministic_solve(;
     start::AbstractVector,
     func::Function,
     grad::Function,
-    tol::Float64 = 1e-6,   # Tolerance for gradient norm
+    tol::Float64 = 1e-4,   # Tolerance for gradient norm
     max_iters::Int = 200   # Maximum number of iterations
 )
     # Copy the trajectory parameters and set the starting point

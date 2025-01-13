@@ -107,11 +107,8 @@ end
 
 function resolve(T::AbstractTrajectory)
     fmini = minimum(get_observations(get_base_surrogate(T)))
-    best_ndx, best_step = best(T)
-    fb = best_step.y
-    return max(fmini - fb, 0.)
+    return resolve(get_observable(T), fmini=fmini)
 end
-
 
 
 function recover_policy_solve(T::Trajectory; solve_index::Int64)
@@ -156,14 +153,17 @@ function solve_dual_x(
     x_duals::Vector{Vector{Float64}};
     optimal_index::Int, 
     solve_index::Int,
-    htol::Float64 = 1e-16)
+    htol::Float64 = 1e-4)
     sx = recover_policy_solve(T, solve_index=solve_index)
 
     if det(hessian(sx)) < htol
         return zeros(length(get_starting_point(T)))
     end
 
-    x_dual = -sx.∇μ * y_duals[solve_index + 1]
+    # TODO: I think this sx.∇μ should be a call to get_gradient
+    ∇fx = get_gradient(get_observable(T), at=solve_index)
+    x_dual = -∇fx * y_duals[solve_index + 1]
+    # x_dual = -sx.∇μ * y_duals[solve_index + 1]
     
     dim = length(get_starting_point(T))
     I_d = Matrix{Float64}(I(dim))
@@ -222,7 +222,9 @@ function gather_q(T::Trajectory; optimal_index::Int)
 
     for solve_index in 1:optimal_index
         sxj = recover_policy_solve(T, solve_index=solve_index)
-        push!(q, hessian(sxj, wrt_hypers=true))
+        # TODO: Should be a mixed partial here
+        # push!(q, hessian(sxj, wrt_hypers=true))
+        push!(q, mixed_partials(sxj))
     end
     
     return q
@@ -244,18 +246,7 @@ function gradient(T::Trajectory)
     # in the determinisitc case. In the stochastic case, we return the gradient of the mean field since in
     # adjoint mode, the gradient depends linearly on the function gradients. Therefore, we replace the random
     # variables with their expectations.
-    if t == 0
-        observable = get_observable(T)
-        if observable isa DeterministicObservable
-            return (∇x=-get_gradient(observable, at=t+1), ∇θ=zeros(θdim))
-        elseif observable isa StochasticObservable
-            # sx = recover_policy_solve(T, solve_index=1)
-            # return (∇x=-sx.∇μ, ∇θ=zeros(θdim))
-            return (∇x=-get_gradient(observable, at=t+1), ∇θ=zeros(θdim))
-        else
-            error("Unsupported observable type")
-        end
-    end
+    if t == 0 return (∇x=-get_gradient(get_observable(T), at=t+1), ∇θ=zeros(θdim)) end
     
     # Case #3: The best step along the trajectory was at a non-trivial step (>= 1)
     xbars = [zeros(xdim) for _ in 1:t]
@@ -285,7 +276,7 @@ function gradient(T::Trajectory)
     return (∇x=-grad_x, ∇θ=-grad_θ)
 end
 
-function simulate_adjoint_trajectory(
+function simulate_trajectory_mc(
     T::Trajectory,
     tp::TrajectoryParameters;
     inner_solve_xstarts::Matrix{T1},
@@ -293,16 +284,28 @@ function simulate_adjoint_trajectory(
     spatial_gradients_container::Union{Nothing, Matrix{T1}} = nothing,
     hyperparameter_gradients_container::Union{Nothing, Matrix{T1}} = nothing) where T1 <: Real
     slbs, subs = get_spatial_bounds(tp)
+    set_start!(T, get_starting_point(tp))
 
+    # (Confused on how to approach) I want to create a handle for simulating a single trajectory and I'm
+    # trying to understand how I want to inject the observable mechanism that is required into a trajectory.
+    # The observable right now assumes you give it info for the entire trajectory. It is implicitly an array of 
+    # h observables.
     for sample_index in each_trajectory(tp)
         # Rollout trajectory
         sampler = StochasticObservable(
-            surrogate=get_fantasy_surrogate(T), 
+            fantasy_surrogate=get_fantasy_surrogate(T), 
             stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
             max_invocations=get_horizon(tp) + 1
         )
         attach_observable!(T, sampler)
 
+        # We can simplify the API here by passing the trajectory object and the parameters to
+        # rollout. rollout!(trajectory, trajectory_parameters).
+        # One might care about providing a sequence of observation mechanism that the trajectory requires, i.e.
+        # attach_observables!(T, [gauss_hermite_sampler, gauss_hermite_sampler, monte_carlo_sampler])
+        # where the length of the observables must be equivalent to h + 1
+        # Another note: If we do this, we need to have a notion for performing the simulations over each observable
+        # mechanism. A standard for loop isn't the correct notion here.
         rollout!(
             T,
             lowerbounds=slbs,
@@ -320,6 +323,133 @@ function simulate_adjoint_trajectory(
         end
 
         reset!(get_fantasy_surrogate(T))
+    end
+
+    μxθ = Distributions.mean(resolutions)
+    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
+    
+    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
+        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
+    else
+        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
+        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
+        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
+        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
+        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
+    end
+end
+
+function simulate_trajectory_mc(
+    T::Trajectory,
+    tp::TrajectoryParameters,
+    observable::AbstractObservable;
+    inner_solve_xstarts::Matrix{T1},
+    resolutions::Vector{T1},
+    spatial_gradients_container::Union{Nothing, Matrix{T1}} = nothing,
+    hyperparameter_gradients_container::Union{Nothing, Matrix{T1}} = nothing) where T1 <: Real
+    slbs, subs = get_spatial_bounds(tp)
+    set_start!(T, get_starting_point(tp))
+
+    # (Confused on how to approach) I want to create a handle for simulating a single trajectory and I'm
+    # trying to understand how I want to inject the observable mechanism that is required into a trajectory.
+    # The observable right now assumes you give it info for the entire trajectory. It is implicitly an array of 
+    # h observables.
+    for sample_index in each_trajectory(tp)
+        # Rollout trajectory
+        sampler = StochasticObservable(
+            fantasy_surrogate=get_fantasy_surrogate(T), 
+            stdnormal=get_samples_rnstream(tp, sample_index=sample_index),
+            max_invocations=get_horizon(tp) + 1
+        )
+        attach_observable!(T, sampler)
+
+        # We can simplify the API here by passing the trajectory object and the parameters to
+        # rollout. rollout!(trajectory, trajectory_parameters).
+        # One might care about providing a sequence of observation mechanism that the trajectory requires, i.e.
+        # attach_observables!(T, [gauss_hermite_sampler, gauss_hermite_sampler, monte_carlo_sampler])
+        # where the length of the observables must be equivalent to h + 1
+        # Another note: If we do this, we need to have a notion for performing the simulations over each observable
+        # mechanism. A standard for loop isn't the correct notion here.
+        rollout!(
+            T,
+            lowerbounds=slbs,
+            upperbounds=subs,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts
+        )
+
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
+        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
+            ∇x, ∇θ = gradient(T)
+            spatial_gradients_container[:, sample_index] = ∇x
+            hyperparameter_gradients_container[:, sample_index] = ∇θ
+        end
+
+        reset!(get_fantasy_surrogate(T))
+    end
+
+    μxθ = Distributions.mean(resolutions)
+    σ_μxθ = Distributions.std(resolutions, mean=μxθ)
+    
+    if isnothing(spatial_gradients_container) && isnothing(hyperparameter_gradients_container)
+        return ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ)
+    else
+        ∇μx = vec(Distributions.mean(spatial_gradients_container, dims=2))
+        σ_∇μx = vec(Distributions.std(spatial_gradients_container, dims=2, mean=∇μx))
+        ∇μθ = vec(Distributions.mean(hyperparameter_gradients_container, dims=2))
+        σ_∇μθ = vec(Distributions.std(hyperparameter_gradients_container, dims=2, mean=∇μθ))
+        return  ExpectedTrajectoryOutput(μxθ=μxθ, σ_μxθ=σ_μxθ, ∇μx=∇μx, σ_∇μx=σ_∇μx, ∇μθ=∇μθ, σ_∇μθ=σ_∇μθ)
+    end
+end
+
+"""
+We only need to provide the nodes, weights and depth. From this, we can construct the GaussHermiteObservable.
+"""
+function simulate_trajectory_ghq(
+    T::Trajectory,
+    tp::TrajectoryParameters;
+    inner_solve_xstarts::Matrix{T1},
+    resolutions::Vector{T1},
+    nodes::Vector{T1},
+    weights::Vector{T1},
+    indices,
+    spatial_gradients_container::Union{Nothing, Matrix{T1}} = nothing,
+    hyperparameter_gradients_container::Union{Nothing, Matrix{T1}} = nothing) where T1 <: Real
+    slbs, subs = get_spatial_bounds(tp)
+    set_start!(T, get_starting_point(tp))
+
+    depth = length(first(indices))
+    sampler = GaussHermiteObservable(
+        fantasy_surrogate=get_fantasy_surrogate(T),
+        nodes=zeros(depth),
+        weights=zeros(depth),
+        max_invocations=depth
+    )
+
+    for sample_index in eachindex(indices)
+        set_weights!(sampler, weights[indices[sample_index]])
+        set_nodes!(sampler, nodes[indices[sample_index]])
+        attach_observable!(T, sampler)
+
+        rollout!(
+            T,
+            lowerbounds=slbs,
+            upperbounds=subs,
+            get_observation=get_observable(T),
+            xstarts=inner_solve_xstarts
+        )
+        
+        # Evaluate rolled out trajectory
+        resolutions[sample_index] = resolve(T)
+        if !isnothing(spatial_gradients_container) && !isnothing(hyperparameter_gradients_container)
+            ∇x, ∇θ = gradient(T)
+            spatial_gradients_container[:, sample_index] = ∇x
+            hyperparameter_gradients_container[:, sample_index] = ∇θ
+        end
+
+        reset!(get_fantasy_surrogate(T))
+        reset!(sampler)
     end
 
     μxθ = Distributions.mean(resolutions)

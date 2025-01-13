@@ -6,8 +6,6 @@ optimization process:
     3. δFRBFsurrogate: a perturbed fantasized RBF surrogate
     4. MultiOutputFantasyRBFsurrogate: a multi-output RBF surrogate
 """
-const GROUND_TRUTH_OBSERVATIONS = -1
-const DEFAULT_CAPACITY = 100
 
 # ------------------------------------------------------------------
 # 1. Operations on GP/RBF surrogates
@@ -293,16 +291,19 @@ function eval(
         sx.d2g_dσdθ = () -> mixed_partial(sx.s.g, symbol=:σθ)(sx.μ, sx.σ, sx.θ, sx)
 
         sx.αxθ = () -> s.g(sx.μ, sx.σ, sx.θ, sx)
+
+        # Spatial derivatives
         sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
         sx.Hαx = () -> sx.d2g_dμ*sx.∇μ*sx.∇μ' + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ*sx.∇σ' + sx.dg_dσ*sx.Hσ
-        # sx.Hαx = () -> sx.dg_dμ*sx.Hμ + sx.dg_dσ*sx.Hσ
-        
+       
+        # Hyperparameter derivatives
         sx.∇αθ = () -> sx.dg_dθ
         sx.Hαθ = () -> sx.d2g_dθ
 
-        sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
-        sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
-        sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
+        # Mixed partials
+        sx.d2α_dσdθ = () -> sx.∇σ * sx.d2g_dσdθ'
+        sx.d2α_dμdθ = () -> sx.∇μ * sx.d2g_dμdθ'
+        sx.d2α_dxdθ = () -> sx.d2α_dμdθ + sx.d2α_dσdθ
     end
 
     return sx
@@ -313,7 +314,7 @@ end
 eval(sx) = sx.αxθ
 gradient(sx; wrt_hypers=false) = wrt_hypers ? sx.∇αθ : sx.∇αx
 hessian(sx; wrt_hypers=false) = wrt_hypers ? sx.Hαθ : sx.Hαx
-mixed_partials(sx) = sx.Hαxθ
+mixed_partials(sx) = sx.d2α_dxdθ
 
 # mutable struct FantasySurrogate{RBF <: StationaryKernel, P <: AbstractDecisionRule} <: AbstractFantasySurrogate
 mutable struct FantasySurrogate{RBF <: StationaryKernel} <: AbstractFantasySurrogate
@@ -562,18 +563,18 @@ function eval(
 
         sx.αxθ = () -> sx.g(sx.μ, sx.σ, sx.θ, sx)
 
-        # Spatial gradients
+        # Spatial derivatives
         sx.∇αx = () -> sx.dg_dμ * sx.∇μ + sx.dg_dσ * sx.∇σ
-        sx.Hαx = () -> sx.d2g_dμ * sx.∇μ + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ + sx.dg_dσ*sx.Hσ
+        sx.Hαx = () -> sx.d2g_dμ*sx.∇μ*sx.∇μ' + sx.dg_dμ*sx.Hμ + sx.d2g_dσ*sx.∇σ*sx.∇σ' + sx.dg_dσ*sx.Hσ
         
-        # Hyperparameter gradients
+        # Hyperparameter derivatives
         sx.∇αθ = () -> sx.dg_dθ
         sx.Hαθ = () -> sx.d2g_dθ
 
         # Mixed partials
-        sx.dα_dσdθ = () -> sx.d2g_dσdθ' * sx.∇σ
-        sx.dα_dμdθ = () -> sx.d2g_dμdθ' * sx.∇μ
-        sx.Hαxθ = () -> sx.dα_dμdθ + sx.dα_dσdθ
+        sx.d2α_dσdθ = () -> sx.∇σ * sx.d2g_dσdθ'
+        sx.d2α_dμdθ = () -> sx.∇μ * sx.d2g_dμdθ'
+        sx.d2α_dxdθ = () -> sx.d2α_dμdθ + sx.d2α_dσdθ
     end
 
     return sx
@@ -606,6 +607,19 @@ function gp_draw(
     else
         @assert length(stdnormal) == 1 "Function observation expects a scalar gaussian random number"
         return sx.μ + sx.σ * stdnormal
+    end
+end
+
+function get_active_locations(fs::AbstractFantasySurrogate, fantasy_index::Int)
+    @views begin
+        return fs.X[:, 1:get_known_observations(fs) + fantasy_index + 1]
+    end
+end
+
+function get_active_cholesky_factor(fs::AbstractFantasySurrogate, fantasy_index::Int64)
+    @views begin
+        slice = 1:get_known_observations(fs) + fantasy_index + 1
+        return fs.L[slice, slice]
     end
 end
 
@@ -644,7 +658,7 @@ function eval(δs::SpatialPerturbationSurrogate, sx; δx::Vector{T}, sample_inde
 
         s = δs.s
         x = sx.x
-        X = get_active_covariates(s)
+        X = get_active_locations(s, δs.max_fantasized_step)
         # Set's the desired location's perturbation while keeping every other location constant
         δs.X[:,:] .= 0.
         δs.X[:, s.observed + sample_index + 1] .= δx
@@ -656,8 +670,8 @@ function eval(δs::SpatialPerturbationSurrogate, sx; δx::Vector{T}, sample_inde
         ZERO_BASED_OFFSET = 1
         TOTAL_OFFSET = ZERO_BASED_OFFSET + FANTASY_BASED_OFFSET
 
-        δsx.K = () -> eval_δKXX(get_kernel(s), get_active_covariates(s), δs.X)
-        δsx.L = () -> get_active_cholesky(s)
+        δsx.K = () -> eval_δKXX(get_kernel(s), get_active_locations(s, δs.max_fantasized_step), δs.X)
+        δsx.L = () -> get_active_cholesky_factor(s, δs.max_fantasized_step)
         δsx.c = () -> -(δsx.L' \ (δsx.L \ (δsx.K*s.cs[δs.max_fantasized_step + TOTAL_OFFSET])))
 
         δsx.kx = () -> eval_δKxX(get_kernel(s), x, X, δs.X)
@@ -694,7 +708,7 @@ function DataPerturbationSurrogate(; reference_surrogate::FantasySurrogate, fant
     return DataPerturbationSurrogate(reference_surrogate, δX, fantasy_step)
 end
 
-function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T}, sample_index::Int) where T <: Real
+function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::AbstractVector{T}, sample_index::Int) where T <: Real
     # @assert 0 <= current_step "Can only perturb fantasized locations"
     # @assert current_step <= δs.max_fantasized_step "Attempting to perturb an observation beyong our trajectory"
     @views begin
@@ -703,7 +717,7 @@ function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T
 
         s = δs.s
         x = sx.x
-        X = get_active_covariate(s)
+        X = get_active_locations(s, δs.max_fantasized_step)
         # Set's the desired location's perturbation while keeping every other location constant
         δs.X[:,:] .= 0.
         δs.X[:, s.observed + sample_index + 1] .= δx
@@ -715,8 +729,8 @@ function eval(δs::DataPerturbationSurrogate, sx; δx::Vector{T}, ∇y::Vector{T
         ZERO_BASED_OFFSET = 1
         TOTAL_OFFSET = ZERO_BASED_OFFSET + FANTASY_BASED_OFFSET
 
-        δsx.K = () -> eval_δKXX(get_kernel(s), get_active_covariates(s), δs.X)
-        δsx.L = () -> get_active_cholesky(s)
+        δsx.K = () -> eval_δKXX(get_kernel(s), get_active_locations(s, δs.max_fantasized_step), δs.X)
+        δsx.L = () -> get_active_cholesky_factor(s, δs.max_fantasized_step)
         δsx.y = function()
             ys = zeros(s.observed + δs.max_fantasized_step + 1)
             ys[fs.known_observed + sample_index + 1] = ∇y' * δs.X[:, s.observed + sample_index + 1]

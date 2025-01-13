@@ -2,13 +2,6 @@ import Base:+, *
 # https://www.sfu.ca/~ssurjano/optimization.html
 # https://en.wikipedia.org/wiki/Test_functions_for_optimization
 
-# struct TestFunction
-#     dim::Integer
-#     bounds::AbstractMatrix
-#     xopt::NTuple{N, AbstractVector{<:Real}} where N
-#     f::Function
-#     ∇f::Function
-# end
 struct TestFunction
     dim::Int
     bounds
